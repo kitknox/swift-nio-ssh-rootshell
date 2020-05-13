@@ -11,6 +11,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 //===----------------------------------------------------------------------===//
+import NIO
 
 extension SSHConnectionStateMachine {
     /// The state of a state machine that has completed user auth and key exchange and is
@@ -24,10 +25,37 @@ extension SSHConnectionStateMachine {
 
         internal var parser: SSHPacketParser
 
+        internal var remoteVersion: String
+
+        internal var protectionSchemes: [NIOSSHTransportProtection.Type]
+
+        internal var sessionIdentifier: ByteBuffer
+
         init(_ previous: UserAuthenticationState) {
             self.role = previous.role
             self.serializer = previous.serializer
             self.parser = previous.parser
+            self.remoteVersion = previous.remoteVersion
+            self.protectionSchemes = previous.protectionSchemes
+            self.sessionIdentifier = previous.sessionIdentifier
+        }
+
+        init(_ previous: RekeyingReceivedNewKeysState) {
+            self.role = previous.role
+            self.serializer = previous.serializer
+            self.parser = previous.parser
+            self.remoteVersion = previous.remoteVersion
+            self.protectionSchemes = previous.protectionSchemes
+            self.sessionIdentifier = previous.sessionIdentifier
+        }
+
+        init(_ previous: RekeyingSentNewKeysState) {
+            self.role = previous.role
+            self.serializer = previous.serializer
+            self.parser = previous.parser
+            self.remoteVersion = previous.remoteVersion
+            self.protectionSchemes = previous.protectionSchemes
+            self.sessionIdentifier = previous.sessionIdentifier
         }
     }
 }
