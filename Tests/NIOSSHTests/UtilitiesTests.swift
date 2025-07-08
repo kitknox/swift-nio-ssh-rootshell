@@ -33,22 +33,22 @@ final class UtilitiesTests: XCTestCase {
         let outboundEncryptionKey = SymmetricKey(size: .bits128)
         let inboundMACKey = SymmetricKey(size: .bits128)
         let outboundMACKey = SymmetricKey(size: .bits128)
-        let client = TestTransportProtection(initialKeys: .init(
+        let client = try TestTransportProtection(initialKeys: .init(
             initialInboundIV: [],
             initialOutboundIV: [],
             inboundEncryptionKey: inboundEncryptionKey,
             outboundEncryptionKey: outboundEncryptionKey,
             inboundMACKey: inboundMACKey,
             outboundMACKey: outboundMACKey
-        ))
-        let server = TestTransportProtection(initialKeys: .init(
+        ), mac: nil)
+        let server = try TestTransportProtection(initialKeys: .init(
             initialInboundIV: [],
             initialOutboundIV: [],
             inboundEncryptionKey: outboundEncryptionKey,
             outboundEncryptionKey: inboundEncryptionKey,
             inboundMACKey: outboundMACKey,
             outboundMACKey: inboundMACKey
-        ))
+        ), mac: nil)
         let message = SSHMessage.channelRequest(.init(recipientChannel: 1, type: .exec("uname"), wantReply: false))
         let allocator = ByteBufferAllocator()
         var buffer = allocator.buffer(capacity: 1024)

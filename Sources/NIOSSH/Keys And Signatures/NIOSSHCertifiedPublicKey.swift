@@ -14,6 +14,7 @@
 
 import Crypto
 import Dispatch
+import Foundation
 import NIOCore
 #if canImport(Darwin)
 import Darwin

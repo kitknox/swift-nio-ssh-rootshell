@@ -130,7 +130,7 @@ class TestTransportProtection: NIOSSHTransportProtection {
         []
     }
 
-    static var keySizes: ExpectedKeySizes {
+    static func keySizes(forMac mac: String?) throws -> ExpectedKeySizes {
         .init(ivSize: 12, encryptionKeySize: 16, macKeySize: 16)
     }
 
@@ -141,9 +141,10 @@ class TestTransportProtection: NIOSSHTransportProtection {
 
     private var lastFirstBlock: ByteBufferView?
 
-    required init(initialKeys: NIOSSHSessionKeys) {
-        precondition(initialKeys.outboundEncryptionKey.bitCount == Self.keySizes.encryptionKeySize * 8)
-        precondition(initialKeys.inboundEncryptionKey.bitCount == Self.keySizes.encryptionKeySize * 8)
+    required init(initialKeys: NIOSSHSessionKeys, mac: String?) throws {
+        let keySizes = try Self.keySizes(forMac: mac)
+        precondition(initialKeys.outboundEncryptionKey.bitCount == keySizes.encryptionKeySize * 8)
+        precondition(initialKeys.inboundEncryptionKey.bitCount == keySizes.encryptionKeySize * 8)
         self.outboundEncryptionKey = initialKeys.outboundEncryptionKey.withUnsafeBytes {
             ByteBuffer(bytes: $0)
         }
@@ -155,8 +156,9 @@ class TestTransportProtection: NIOSSHTransportProtection {
     }
 
     func updateKeys(_ newKeys: NIOSSHSessionKeys) throws {
-        precondition(newKeys.outboundEncryptionKey.bitCount == Self.keySizes.encryptionKeySize * 8)
-        precondition(newKeys.inboundEncryptionKey.bitCount == Self.keySizes.encryptionKeySize * 8)
+        let keySizes = try Self.keySizes(forMac: nil)
+        precondition(newKeys.outboundEncryptionKey.bitCount == keySizes.encryptionKeySize * 8)
+        precondition(newKeys.inboundEncryptionKey.bitCount == keySizes.encryptionKeySize * 8)
         self.outboundEncryptionKey = newKeys.outboundEncryptionKey.withUnsafeBytes {
             ByteBuffer(bytes: $0)
         }
