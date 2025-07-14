@@ -14,6 +14,7 @@
 
 import Crypto
 import NIOCore
+import NIOFoundationCompat
 @testable import NIOSSH
 import XCTest
 

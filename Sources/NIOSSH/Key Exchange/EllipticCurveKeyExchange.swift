@@ -13,6 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 import Crypto
+import Foundation
 import NIOCore
 import NIOFoundationCompat
 

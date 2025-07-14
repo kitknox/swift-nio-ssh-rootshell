@@ -68,7 +68,7 @@ final class KeyExchangeTests: XCTestCase {
                                                      serverHostKey: serverHostKey,
                                                      initialExchangeBytes: &initialExchangeBytes,
                                                      allocator: ByteBufferAllocator(),
-                                                     expectedKeySizes: AES128GCMOpenSSHTransportProtection.keySizes)
+                                                     expectedKeySizes: try AES128GCMOpenSSHTransportProtection.keySizes(forMac: nil))
         )
 
         initialExchangeBytes.clear()
@@ -77,7 +77,7 @@ final class KeyExchangeTests: XCTestCase {
             try client.receiveServerKeyExchangePayload(serverKeyExchangeMessage: serverResponse,
                                                        initialExchangeBytes: &initialExchangeBytes,
                                                        allocator: ByteBufferAllocator(),
-                                                       expectedKeySizes: AES128GCMOpenSSHTransportProtection.keySizes)
+                                                       expectedKeySizes: try AES128GCMOpenSSHTransportProtection.keySizes(forMac: nil))
         )
 
         // Check we agree on the session ID and the keys.
@@ -116,7 +116,7 @@ final class KeyExchangeTests: XCTestCase {
                                                      serverHostKey: serverHostKey,
                                                      initialExchangeBytes: &initialExchangeBytes,
                                                      allocator: ByteBufferAllocator(),
-                                                     expectedKeySizes: AES128GCMOpenSSHTransportProtection.keySizes)
+                                                     expectedKeySizes: try AES128GCMOpenSSHTransportProtection.keySizes(forMac: nil))
         )
 
         initialExchangeBytes.clear()
@@ -125,7 +125,7 @@ final class KeyExchangeTests: XCTestCase {
             try client.receiveServerKeyExchangePayload(serverKeyExchangeMessage: serverResponse,
                                                        initialExchangeBytes: &initialExchangeBytes,
                                                        allocator: ByteBufferAllocator(),
-                                                       expectedKeySizes: AES128GCMOpenSSHTransportProtection.keySizes)
+                                                       expectedKeySizes: try AES128GCMOpenSSHTransportProtection.keySizes(forMac: nil))
         )
 
         // Check we agree on the session ID and the keys.
@@ -145,7 +145,7 @@ final class KeyExchangeTests: XCTestCase {
                                                      serverHostKey: serverHostKey,
                                                      initialExchangeBytes: &initialExchangeBytes,
                                                      allocator: ByteBufferAllocator(),
-                                                     expectedKeySizes: AES128GCMOpenSSHTransportProtection.keySizes)
+                                                     expectedKeySizes: try AES128GCMOpenSSHTransportProtection.keySizes(forMac: nil))
         )
 
         initialExchangeBytes.clear()
@@ -154,7 +154,7 @@ final class KeyExchangeTests: XCTestCase {
             try client.receiveServerKeyExchangePayload(serverKeyExchangeMessage: serverResponse,
                                                        initialExchangeBytes: &initialExchangeBytes,
                                                        allocator: ByteBufferAllocator(),
-                                                       expectedKeySizes: AES128GCMOpenSSHTransportProtection.keySizes)
+                                                       expectedKeySizes: try AES128GCMOpenSSHTransportProtection.keySizes(forMac: nil))
         )
 
         // Check we agree on the session ID and the keys.
@@ -174,7 +174,7 @@ final class KeyExchangeTests: XCTestCase {
                                                      serverHostKey: serverHostKey,
                                                      initialExchangeBytes: &initialExchangeBytes,
                                                      allocator: ByteBufferAllocator(),
-                                                     expectedKeySizes: AES128GCMOpenSSHTransportProtection.keySizes)
+                                                     expectedKeySizes: try AES128GCMOpenSSHTransportProtection.keySizes(forMac: nil))
         )
 
         initialExchangeBytes.clear()
@@ -183,7 +183,7 @@ final class KeyExchangeTests: XCTestCase {
             try client.receiveServerKeyExchangePayload(serverKeyExchangeMessage: serverResponse,
                                                        initialExchangeBytes: &initialExchangeBytes,
                                                        allocator: ByteBufferAllocator(),
-                                                       expectedKeySizes: AES128GCMOpenSSHTransportProtection.keySizes)
+                                                       expectedKeySizes: try AES128GCMOpenSSHTransportProtection.keySizes(forMac: nil))
         )
 
         // Check we agree on the session ID and the keys.
@@ -203,7 +203,7 @@ final class KeyExchangeTests: XCTestCase {
                                                      serverHostKey: serverHostKey,
                                                      initialExchangeBytes: &initialExchangeBytes,
                                                      allocator: ByteBufferAllocator(),
-                                                     expectedKeySizes: AES128GCMOpenSSHTransportProtection.keySizes)
+                                                     expectedKeySizes: try AES128GCMOpenSSHTransportProtection.keySizes(forMac: nil))
         )
 
         initialExchangeBytes.clear()
@@ -212,7 +212,7 @@ final class KeyExchangeTests: XCTestCase {
             try client.receiveServerKeyExchangePayload(serverKeyExchangeMessage: serverResponse,
                                                        initialExchangeBytes: &initialExchangeBytes,
                                                        allocator: ByteBufferAllocator(),
-                                                       expectedKeySizes: AES128GCMOpenSSHTransportProtection.keySizes)
+                                                       expectedKeySizes: try AES128GCMOpenSSHTransportProtection.keySizes(forMac: nil))
         )
 
         // Check we agree on the session ID and the keys.
@@ -232,7 +232,7 @@ final class KeyExchangeTests: XCTestCase {
                                                      serverHostKey: serverHostKey,
                                                      initialExchangeBytes: &initialExchangeBytes,
                                                      allocator: ByteBufferAllocator(),
-                                                     expectedKeySizes: AES256GCMOpenSSHTransportProtection.keySizes)
+                                                     expectedKeySizes: try AES256GCMOpenSSHTransportProtection.keySizes(forMac: nil))
         )
 
         initialExchangeBytes.clear()
@@ -241,7 +241,7 @@ final class KeyExchangeTests: XCTestCase {
             try client.receiveServerKeyExchangePayload(serverKeyExchangeMessage: serverResponse,
                                                        initialExchangeBytes: &initialExchangeBytes,
                                                        allocator: ByteBufferAllocator(),
-                                                       expectedKeySizes: AES256GCMOpenSSHTransportProtection.keySizes)
+                                                       expectedKeySizes: try AES256GCMOpenSSHTransportProtection.keySizes(forMac: nil))
         )
 
         // Check we agree on the session ID and the keys.
@@ -265,14 +265,14 @@ final class KeyExchangeTests: XCTestCase {
                                                      serverHostKey: serverHostKey,
                                                      initialExchangeBytes: &serverInitialBytes,
                                                      allocator: ByteBufferAllocator(),
-                                                     expectedKeySizes: AES128GCMOpenSSHTransportProtection.keySizes)
+                                                     expectedKeySizes: try AES128GCMOpenSSHTransportProtection.keySizes(forMac: nil))
         )
 
         XCTAssertThrowsError(
             try client.receiveServerKeyExchangePayload(serverKeyExchangeMessage: serverResponse,
                                                        initialExchangeBytes: &clientInitialBytes,
                                                        allocator: ByteBufferAllocator(),
-                                                       expectedKeySizes: AES128GCMOpenSSHTransportProtection.keySizes)
+                                                       expectedKeySizes: try AES128GCMOpenSSHTransportProtection.keySizes(forMac: nil))
         ) { error in
             XCTAssertEqual((error as? NIOSSHError).map { $0.type }, .invalidExchangeHashSignature)
         }
@@ -292,7 +292,7 @@ final class KeyExchangeTests: XCTestCase {
                                                      serverHostKey: serverHostKey,
                                                      initialExchangeBytes: &initialExchangeBytes,
                                                      allocator: ByteBufferAllocator(),
-                                                     expectedKeySizes: AES128GCMOpenSSHTransportProtection.keySizes)
+                                                     expectedKeySizes: try AES128GCMOpenSSHTransportProtection.keySizes(forMac: nil))
         )
 
         initialExchangeBytes.clear()
@@ -309,7 +309,7 @@ final class KeyExchangeTests: XCTestCase {
             try client.receiveServerKeyExchangePayload(serverKeyExchangeMessage: serverResponse,
                                                        initialExchangeBytes: &initialExchangeBytes,
                                                        allocator: ByteBufferAllocator(),
-                                                       expectedKeySizes: AES128GCMOpenSSHTransportProtection.keySizes)
+                                                       expectedKeySizes: try AES128GCMOpenSSHTransportProtection.keySizes(forMac: nil))
         ) { error in
             XCTAssertEqual((error as? NIOSSHError).map { $0.type }, .invalidExchangeHashSignature)
         }

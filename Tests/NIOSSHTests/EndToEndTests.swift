@@ -15,6 +15,7 @@
 import Crypto
 import NIOCore
 import NIOEmbedded
+import NIOFoundationCompat
 @testable import NIOSSH
 import XCTest
 
@@ -29,11 +30,11 @@ final class CustomTransportProtection: NIOSSHTransportProtection {
     static let macNames = ["insecure-sha1"]
     static var wasUsed = false
     
-    static var keySizes: ExpectedKeySizes {
+    static func keySizes(forMac mac: String?) throws -> ExpectedKeySizes {
         .init(ivSize: 19, encryptionKeySize: 17, macKeySize: 15)
     }
     
-    required init(initialKeys: NIOSSHSessionKeys) throws {}
+    required init(initialKeys: NIOSSHSessionKeys, mac: String?) throws {}
     
     static var cipherBlockSize: Int { 18 }
     var macBytes: Int { 20 }

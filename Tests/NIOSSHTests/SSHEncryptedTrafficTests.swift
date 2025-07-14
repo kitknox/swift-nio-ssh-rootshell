@@ -140,7 +140,7 @@ final class SSHEncryptedTrafficTests: XCTestCase {
                                      inboundEncryptionKey: .init(data: [241, 99, 181, 233, 148, 184, 187, 134, 80, 195, 18, 18, 218, 44, 118, 219, 120, 69, 225, 63, 105, 179, 131, 204, 156, 172, 105, 142, 12, 75, 148, 88]),
                                      outboundEncryptionKey: .init(data: [109, 86, 219, 88, 84, 20, 197, 13, 74, 19, 120, 17, 95, 59, 25, 181, 12, 237, 109, 51, 239, 86, 169, 53, 85, 35, 162, 88, 215, 199, 219, 82]),
                                      inboundMACKey: .init(size: .bits128), outboundMACKey: .init(size: .bits128))
-        let protection = try assertNoThrowWithValue(AES256GCMOpenSSHTransportProtection(initialKeys: keys))
+        let protection = try assertNoThrowWithValue(AES256GCMOpenSSHTransportProtection(initialKeys: keys, mac: nil))
 
         self.parser.addEncryption(protection)
 
@@ -173,15 +173,15 @@ private extension SSHEncryptedTrafficTests {
 
         private func aes128Protection() -> (client: AES128GCMOpenSSHTransportProtection, server: AES128GCMOpenSSHTransportProtection) {
             let keys = self.generateKeys(keySize: .bits128, ivSize: 12, macSize: .bits128)
-            let client = try! AES128GCMOpenSSHTransportProtection(initialKeys: keys)
-            let server = try! AES128GCMOpenSSHTransportProtection(initialKeys: keys.inverted)
+            let client = try! AES128GCMOpenSSHTransportProtection(initialKeys: keys, mac: nil)
+            let server = try! AES128GCMOpenSSHTransportProtection(initialKeys: keys.inverted, mac: nil)
             return (client: client, server: server)
         }
 
         private func aes256Protection() -> (client: AES256GCMOpenSSHTransportProtection, server: AES256GCMOpenSSHTransportProtection) {
             let keys = self.generateKeys(keySize: .bits256, ivSize: 12, macSize: .bits128)
-            let client = try! AES256GCMOpenSSHTransportProtection(initialKeys: keys)
-            let server = try! AES256GCMOpenSSHTransportProtection(initialKeys: keys.inverted)
+            let client = try! AES256GCMOpenSSHTransportProtection(initialKeys: keys, mac: nil)
+            let server = try! AES256GCMOpenSSHTransportProtection(initialKeys: keys.inverted, mac: nil)
             return (client: client, server: server)
         }
 

@@ -16,6 +16,7 @@ import Crypto
 import Foundation
 import NIOConcurrencyHelpers
 import NIOCore
+import NIOFoundationCompat
 
 /// An SSH public key.
 ///
@@ -282,13 +283,13 @@ internal var customKeyExchangeAlgorithms: [NIOSSHKeyExchangeAlgorithmProtocol.Ty
 }
 
 private enum _CustomAlgorithms {
-    static var transportProtectionSchemesLock = Lock()
+    static var transportProtectionSchemesLock = NIOLock()
     static var transportProtectionSchemes = [NIOSSHTransportProtection.Type]()
-    static var keyExchangeAlgorithmsLock = Lock()
+    static var keyExchangeAlgorithmsLock = NIOLock()
     static var keyExchangeAlgorithms = [NIOSSHKeyExchangeAlgorithmProtocol.Type]()
-    static var publicKeyAlgorithmsLock = Lock()
+    static var publicKeyAlgorithmsLock = NIOLock()
     static var publicKeyAlgorithms: [NIOSSHPublicKeyProtocol.Type] = []
-    static var signaturesLock = Lock()
+    static var signaturesLock = NIOLock()
     static var signatures: [NIOSSHSignatureProtocol.Type] = []
 }
 

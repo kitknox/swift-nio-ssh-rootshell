@@ -129,7 +129,7 @@ struct SSHPacketParser {
 
     internal static let maximumAllowedVersionSize = 4096
     private mutating func readVersion() throws -> String? {
-        // Looking for a string ending with \r\n
+        // Looking for a complete SSH version string, potentially with pre-lines
         let slice = self.buffer.readableBytesView
 
         // Prevent the consumed bytes for a version from exceeding the defined maximum allowed size
@@ -137,22 +137,32 @@ struct SSHPacketParser {
         // More data cannot be blindly regarded as malicious though, since this might contain multiple packets
         let maxIndex = slice.index(slice.startIndex, offsetBy: min(slice.count, Self.maximumAllowedVersionSize))
 
+        var lastLineEndIndex: ByteBufferView.Index?
+        
         for index in slice.startIndex ..< slice.endIndex {
             if index > maxIndex {
                 // Does not account for `CRLF`
                 throw NIOSSHError.excessiveVersionLength
             }
 
-            if slice[index] == 10 {
-                var version = String(decoding: slice[slice.startIndex ..< index], as: UTF8.self)
-                // read \r\n
-                self.buffer.moveReaderIndex(forwardBy: slice.startIndex.distance(to: index).advanced(by: 1))
-                if version.last == "\r" {
-                    // \r
-                    version.removeLast()
+            if slice[index] == 10 { // Found a line ending
+                let lineStartIndex = lastLineEndIndex?.advanced(by: 1) ?? slice.startIndex
+                let lineSlice = slice[lineStartIndex..<index]
+                
+                // Check if this line looks like an SSH version (any SSH version, not just 2.0)
+                if lineSlice.count >= 4 && lineSlice.starts(with: "SSH-".utf8) {
+                    // Found SSH version line, return everything up to and including this line
+                    var version = String(decoding: slice[slice.startIndex..<index], as: UTF8.self)
+                    // read including \n
+                    self.buffer.moveReaderIndex(forwardBy: slice.startIndex.distance(to: index).advanced(by: 1))
+                    // Remove the trailing \r if present (but keep \n removal logic for consistency)
+                    if version.last == "\r" {
+                        version.removeLast()
+                    }
+                    return version
                 }
                 
-                return version
+                lastLineEndIndex = index
             }
         }
 
