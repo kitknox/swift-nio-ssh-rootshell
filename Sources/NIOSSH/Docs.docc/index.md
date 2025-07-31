@@ -121,7 +121,7 @@ The server protocol is more complex. The delegate must provide a ``NIOSSHServerU
 SwiftNIO SSH supports SSH certificate authentication through the public key authentication method. When using certificates:
 
 - Clients can offer a ``NIOSSHCertifiedPublicKey`` as part of their public key authentication by using the ``NIOSSHUserAuthenticationOffer/Offer/PrivateKey/init(privateKey:certifiedKey:)`` initializer.
-- Servers will automatically validate certificates against configured trusted certificate authorities (CAs) when ``SSHServerConfiguration/trustedCAKeys`` is set.
+- Servers will automatically validate certificates against configured trusted certificate authorities (CAs) when ``SSHServerConfiguration/trustedUserCAKeys`` is set.
 - The ``NIOSSHUserAuthenticationRequest/Request/PublicKey/certifiedKey`` property will contain the parsed certificate information after successful validation.
 - Certificate validation includes checking the certificate type, principal, validity period, signature, and critical options.
 

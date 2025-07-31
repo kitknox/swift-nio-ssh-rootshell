@@ -427,7 +427,7 @@ private extension UserAuthenticationStateMachine {
                         principal: request.username,
                         type: .user,
                         allowedAuthoritySigningKeys: config.trustedUserCAKeys,
-                        acceptableCriticalOptions: ["force-command", "source-address"]
+                        acceptableCriticalOptions: config.acceptableCriticalOptions
                     )
                     
                     // Certificate is valid, store it to pass to the delegate
@@ -463,7 +463,7 @@ private extension UserAuthenticationStateMachine {
                         principal: request.username,
                         type: .user,
                         allowedAuthoritySigningKeys: config.trustedUserCAKeys,
-                        acceptableCriticalOptions: ["force-command", "source-address"]
+                        acceptableCriticalOptions: config.acceptableCriticalOptions
                     )
                     // Certificate is valid
                     return self.loop.makeSucceededFuture(.publicKeyOK(.init(key: key)))

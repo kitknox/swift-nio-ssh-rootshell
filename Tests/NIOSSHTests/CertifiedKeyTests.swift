@@ -986,7 +986,7 @@ extension CertifiedKeyTests {
             criticalOptions: ["source-address": "192.168.1.0/24,10.0.0.1"],
             extensions: [:],
             signatureKey: caKey,
-            signature: caPrivateKey.sign(digest: SHA256.hash(data: []))
+            signature: caPrivateKey.sign(digest: SHA256.hash(data: nonce.readableBytesView))
         )
         
         let certKey = NIOSSHPublicKey(certifiedKey)
@@ -1048,7 +1048,7 @@ extension CertifiedKeyTests {
             criticalOptions: ["unacceptable-option": "value"],
             extensions: [:],
             signatureKey: caKey,
-            signature: caPrivateKey.sign(digest: SHA256.hash(data: []))
+            signature: caPrivateKey.sign(digest: SHA256.hash(data: nonce.readableBytesView))
         )
         
         let certKey = NIOSSHPublicKey(certifiedKey)

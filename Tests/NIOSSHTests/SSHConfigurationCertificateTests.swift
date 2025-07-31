@@ -264,6 +264,34 @@ final class SSHConfigurationCertificateTests: XCTestCase {
         // This is tested in the state machine tests
     }
     
+    func testServerConfigurationAcceptableCriticalOptions() throws {
+        // Test that server configuration properly handles custom acceptable critical options
+        let hostKey = NIOSSHPrivateKey(p256Key: .init())
+        
+        // Test default configuration
+        let defaultConfig = SSHServerConfiguration(
+            hostKeys: [hostKey],
+            userAuthDelegate: TestAcceptAllAuthDelegate()
+        )
+        XCTAssertEqual(defaultConfig.acceptableCriticalOptions, ["force-command", "source-address"])
+        
+        // Test custom configuration
+        var customConfig = SSHServerConfiguration(
+            hostKeys: [hostKey],
+            userAuthDelegate: TestAcceptAllAuthDelegate()
+        )
+        customConfig.acceptableCriticalOptions = ["custom-option", "another-option"]
+        XCTAssertEqual(customConfig.acceptableCriticalOptions, ["custom-option", "another-option"])
+        
+        // Test empty configuration
+        var emptyConfig = SSHServerConfiguration(
+            hostKeys: [hostKey],
+            userAuthDelegate: TestAcceptAllAuthDelegate()
+        )
+        emptyConfig.acceptableCriticalOptions = []
+        XCTAssertTrue(emptyConfig.acceptableCriticalOptions.isEmpty)
+    }
+    
     func testConfigurationCopySemantics() throws {
         // Test that configuration structs have proper value semantics
         let caKey1 = NIOSSHPrivateKey(p256Key: .init()).publicKey
