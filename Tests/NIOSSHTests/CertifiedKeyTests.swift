@@ -968,7 +968,7 @@ extension CertifiedKeyTests {
         // Test source-address critical option handling
         let caKey = try NIOSSHPublicKey(openSSHPublicKey: Fixtures.caPublicKey)
         
-        // Create a mock certificate with source-address critical option
+        // Create a real certificate with the source-address critical option
         let nonce = ByteBuffer(repeating: 0, count: 32)
         let baseKey = try NIOSSHPublicKey(openSSHPublicKey: Fixtures.p256UserBase)
         // Use a generated CA key instead of parsing from fixtures
@@ -1030,7 +1030,7 @@ extension CertifiedKeyTests {
         // Test that unacceptable critical options cause rejection
         let caKey = try NIOSSHPublicKey(openSSHPublicKey: Fixtures.caPublicKey)
         
-        // Create a mock certificate with unacceptable critical option
+        // Create a real certificate with an unacceptable critical option
         let nonce = ByteBuffer(repeating: 0, count: 32)
         let baseKey = try NIOSSHPublicKey(openSSHPublicKey: Fixtures.p256UserBase)
         // Use a generated CA key instead of parsing from fixtures
