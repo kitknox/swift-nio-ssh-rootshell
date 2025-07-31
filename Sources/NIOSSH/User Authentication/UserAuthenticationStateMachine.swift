@@ -19,6 +19,7 @@ struct UserAuthenticationStateMachine {
     private var delegate: UserAuthDelegate
     private let loop: EventLoop
     private var sessionID: ByteBuffer
+    private let role: SSHConnectionRole
 
     // TODO: The server SHOULD limit the number of authentication attempts the client may make.
     init(role: SSHConnectionRole, loop: EventLoop, sessionID: ByteBuffer) {
@@ -26,6 +27,7 @@ struct UserAuthenticationStateMachine {
         self.delegate = UserAuthDelegate(role: role)
         self.loop = loop
         self.sessionID = sessionID
+        self.role = role
     }
 
     fileprivate static let serviceName: String = "ssh-userauth"
@@ -414,8 +416,34 @@ private extension UserAuthenticationStateMachine {
                 return self.loop.makeSucceededFuture(.failure(.init(authentications: supportedMethods.strings, partialSuccess: false)))
             }
 
+            // Check if this is a certificate and validate it
+            var validatedCertificate: NIOSSHCertifiedPublicKey? = nil
+            if let certifiedKey = NIOSSHCertifiedPublicKey(key),
+               case .server(let config) = self.role,
+               !config.trustedUserCAKeys.isEmpty {
+                // This is a certificate and we have trusted CAs configured
+                do {
+                    let criticalOptions = try certifiedKey.validate(
+                        principal: request.username,
+                        type: .user,
+                        allowedAuthoritySigningKeys: config.trustedUserCAKeys,
+                        acceptableCriticalOptions: config.acceptableCriticalOptions
+                    )
+                    
+                    // Certificate is valid, store it to pass to the delegate
+                    validatedCertificate = certifiedKey
+                } catch {
+                    // Certificate validation failed
+                    return self.loop.makeSucceededFuture(.failure(.init(authentications: supportedMethods.strings, partialSuccess: false)))
+                }
+            }
+
             // Signature is valid, ask if the delegate is happy.
-            let request = NIOSSHUserAuthenticationRequest(username: request.username, serviceName: request.service, request: .publicKey(.init(publicKey: key)))
+            let request = NIOSSHUserAuthenticationRequest(
+                username: request.username,
+                serviceName: request.service,
+                request: .publicKey(.init(publicKey: key, certifiedKey: validatedCertificate))
+            )
             let promise = self.loop.makePromise(of: NIOSSHUserAuthenticationOutcome.self)
             delegate.requestReceived(request: request, responsePromise: promise)
 
@@ -425,7 +453,26 @@ private extension UserAuthenticationStateMachine {
 
         case .publicKey(.known(key: let key, signature: .none)):
             // This is a weird wrinkle in public key auth: it's a request to ask whether a given key is valid, but not to validate that key itself.
-            // For now we do a shortcut: we just say that all keys are acceptable, rather than ask the delegate.
+            // For certificates, we should validate them before saying they're OK
+            if let certifiedKey = NIOSSHCertifiedPublicKey(key),
+               case .server(let config) = self.role,
+               !config.trustedUserCAKeys.isEmpty {
+                // This is a certificate and we have trusted CAs configured
+                do {
+                    _ = try certifiedKey.validate(
+                        principal: request.username,
+                        type: .user,
+                        allowedAuthoritySigningKeys: config.trustedUserCAKeys,
+                        acceptableCriticalOptions: config.acceptableCriticalOptions
+                    )
+                    // Certificate is valid
+                    return self.loop.makeSucceededFuture(.publicKeyOK(.init(key: key)))
+                } catch {
+                    // Certificate validation failed, reject it
+                    return self.loop.makeSucceededFuture(.failure(.init(authentications: delegate.supportedAuthenticationMethods.strings, partialSuccess: false)))
+                }
+            }
+            // For now we do a shortcut: we just say that all non-certificate keys are acceptable, rather than ask the delegate.
             return self.loop.makeSucceededFuture(.publicKeyOK(.init(key: key)))
 
         case .publicKey(.unknown):

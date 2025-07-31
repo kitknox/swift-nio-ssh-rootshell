@@ -14,6 +14,10 @@
 import NIOCore
 
 /// The user authentication modes available at this point in time.
+///
+/// Note: SSH certificate authentication is supported through the publicKey method,
+/// not as a separate authentication method. When using certificates, the publicKey
+/// method is used with a certified key.
 public struct NIOSSHAvailableUserAuthenticationMethods: OptionSet {
     public var rawValue: UInt8
 
@@ -97,9 +101,21 @@ public extension NIOSSHUserAuthenticationRequest {
 public extension NIOSSHUserAuthenticationRequest.Request {
     struct PublicKey {
         public var publicKey: NIOSSHPublicKey
+        
+        /// If the public key is a certificate, this contains the parsed certificate information.
+        /// This includes critical options, extensions, and other certificate metadata.
+        /// Certificate authentication in SSH uses the publicKey authentication method with
+        /// a certified key, not a separate authentication method.
+        public var certifiedKey: NIOSSHCertifiedPublicKey?
 
         public init(publicKey: NIOSSHPublicKey) {
             self.publicKey = publicKey
+            self.certifiedKey = NIOSSHCertifiedPublicKey(publicKey)
+        }
+        
+        public init(publicKey: NIOSSHPublicKey, certifiedKey: NIOSSHCertifiedPublicKey?) {
+            self.publicKey = publicKey
+            self.certifiedKey = certifiedKey
         }
     }
 
@@ -113,7 +129,7 @@ public extension NIOSSHUserAuthenticationRequest.Request {
 
     struct HostBased {
         init() {
-            fatalError("PublicKeyRequest is currently unimplemented")
+            fatalError("HostBased authentication is currently unimplemented")
         }
     }
 }
@@ -160,6 +176,8 @@ public extension NIOSSHUserAuthenticationOffer.Offer {
             self.publicKey = privateKey.publicKey
         }
 
+        /// Creates a private key offer with a certified public key.
+        /// Certificate authentication uses the publicKey authentication method.
         public init(privateKey: NIOSSHPrivateKey, certifiedKey: NIOSSHCertifiedPublicKey) {
             self.privateKey = privateKey
             self.publicKey = NIOSSHPublicKey(certifiedKey)
@@ -176,7 +194,7 @@ public extension NIOSSHUserAuthenticationOffer.Offer {
 
     struct HostBased {
         init() {
-            fatalError("PublicKeyRequest is currently unimplemented")
+            fatalError("HostBased authentication is currently unimplemented")
         }
     }
 }
