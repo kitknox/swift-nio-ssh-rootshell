@@ -97,9 +97,19 @@ public extension NIOSSHUserAuthenticationRequest {
 public extension NIOSSHUserAuthenticationRequest.Request {
     struct PublicKey {
         public var publicKey: NIOSSHPublicKey
+        
+        /// If the public key is a certificate, this contains the parsed certificate information.
+        /// This includes critical options, extensions, and other certificate metadata.
+        public var certifiedKey: NIOSSHCertifiedPublicKey?
 
         public init(publicKey: NIOSSHPublicKey) {
             self.publicKey = publicKey
+            self.certifiedKey = NIOSSHCertifiedPublicKey(publicKey)
+        }
+        
+        public init(publicKey: NIOSSHPublicKey, certifiedKey: NIOSSHCertifiedPublicKey?) {
+            self.publicKey = publicKey
+            self.certifiedKey = certifiedKey
         }
     }
 

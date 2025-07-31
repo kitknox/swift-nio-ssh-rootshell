@@ -34,6 +34,11 @@ public struct SSHServerConfiguration {
     
     /// The maximum packet size that this NIOSSH server will accept
     public var maximumPacketSize = SSHPacketParser.defaultMaximumPacketSize
+    
+    /// The trusted certificate authority public keys for user authentication.
+    /// When set, users presenting certificates signed by these CAs will be authenticated
+    /// if the certificate is valid and the principal matches.
+    public var trustedUserCAKeys: [NIOSSHPublicKey] = []
 
     public init(hostKeys: [NIOSSHPrivateKey], userAuthDelegate: NIOSSHServerUserAuthenticationDelegate, globalRequestDelegate: GlobalRequestDelegate? = nil, banner: UserAuthBanner? = nil) {
         self.hostKeys = hostKeys
