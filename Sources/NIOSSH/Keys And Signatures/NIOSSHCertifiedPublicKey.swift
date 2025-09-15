@@ -15,6 +15,11 @@
 import Crypto
 import Dispatch
 import Foundation
+
+#if canImport(CDispatch)
+import CDispatch
+#endif
+
 import NIOCore
 #if canImport(Darwin)
 import Darwin
