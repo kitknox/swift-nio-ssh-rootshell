@@ -199,12 +199,51 @@ extension NIOSSHPublicKey {
         }
     }
 
+    var authAlgorithmName: String.UTF8View {
+        switch self.backingKey {
+        case .ed25519:
+            return Self.ed25519PublicKeyPrefix
+        case .ecdsaP256:
+            return Self.ecdsaP256PublicKeyPrefix
+        case .ecdsaP384:
+            return Self.ecdsaP384PublicKeyPrefix
+        case .ecdsaP521:
+            return Self.ecdsaP521PublicKeyPrefix
+        case .custom(let publicKey):
+            let keyPrefix = publicKey.publicKeyPrefix
+            // Special handling for RSA keys: use rsa-sha2-256 instead of deprecated ssh-rsa
+            if keyPrefix == "ssh-rsa" {
+                print("🔐🔐 Custom Key: Detected RSA key, using rsa-sha2-256 for auth")
+                return "rsa-sha2-256".utf8
+            }
+            let authAlgo = publicKey.authAlgorithmName
+            print("🔐🔐 Custom Key authAlgorithmName: \(authAlgo), type: \(type(of: publicKey))")
+            return authAlgo.utf8
+        case .certified(let base):
+            return base.keyPrefix
+        }
+    }
+
     private static let bundledAlgorithms: [String.UTF8View] = [
         Self.ed25519PublicKeyPrefix, Self.ecdsaP384PublicKeyPrefix, Self.ecdsaP256PublicKeyPrefix, Self.ecdsaP521PublicKeyPrefix,
     ]
 
     static var knownAlgorithms: [String.UTF8View] {
-        bundledAlgorithms + customPublicKeyAlgorithms.map { $0.publicKeyPrefix.utf8 }
+        var algorithms = bundledAlgorithms
+        for algorithm in customPublicKeyAlgorithms {
+            let keyPrefix = algorithm.publicKeyPrefix
+            // Add the public key prefix (e.g., "ssh-rsa")
+            algorithms.append(keyPrefix.utf8)
+            print("🔐🔐 SSH Capability - Added algorithm: \(keyPrefix)")
+            // Special handling for RSA: also announce rsa-sha2-256 support
+            if keyPrefix == "ssh-rsa" {
+                algorithms.append("rsa-sha2-256".utf8)
+                print("🔐🔐 SSH Capability - Added rsa-sha2-256 for RSA key")
+            }
+        }
+        let algoNames = algorithms.map { String(decoding: $0, as: UTF8.self) }.joined(separator: ", ")
+        print("🔐🔐 SSH Known Algorithms: [\(algoNames)]")
+        return algorithms
     }
 
     static var customPublicKeyAlgorithms: [NIOSSHPublicKeyProtocol.Type] {

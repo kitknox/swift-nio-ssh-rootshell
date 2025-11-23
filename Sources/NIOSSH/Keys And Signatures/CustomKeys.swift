@@ -13,7 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 import Foundation
-import NIO
+import NIOCore
 
 /// A signature is a mathematical scheme for verifying the authenticity of digital messages or documents.
 ///
@@ -63,9 +63,24 @@ public protocol NIOSSHPublicKeyProtocol {
     static func read(from buffer: inout ByteBuffer) throws -> Self
 }
 
+public extension NIOSSHPublicKeyProtocol {
+    /// Optional override for the authentication algorithm name sent in SSH_MSG_USERAUTH_REQUEST.
+    /// If not provided, defaults to publicKeyPrefix.
+    /// This is useful for RSA keys that use rsa-sha2-* signature algorithms while maintaining ssh-rsa key type.
+    static var authAlgorithmName: String { publicKeyPrefix }
+}
+
 internal extension NIOSSHPublicKeyProtocol {
     var publicKeyPrefix: String {
         Self.publicKeyPrefix
+    }
+
+    var authAlgorithmName: String {
+        let staticValue = Self.authAlgorithmName
+        let fullTypeName = String(reflecting: Self.self)
+        print("🔐🔐🔐 Protocol Extension - FullType: \(fullTypeName)")
+        print("🔐🔐🔐 Protocol Extension - staticValue: '\(staticValue)', publicKeyPrefix: '\(Self.publicKeyPrefix)'")
+        return staticValue
     }
 }
 
@@ -82,8 +97,19 @@ public protocol NIOSSHPrivateKeyProtocol {
     func signature<D: DataProtocol>(for data: D) throws -> NIOSSHSignatureProtocol
 }
 
+public extension NIOSSHPrivateKeyProtocol {
+    /// Optional override for the authentication algorithm name sent in SSH_MSG_USERAUTH_REQUEST.
+    /// If not provided, defaults to keyPrefix.
+    /// This is useful for RSA keys that use rsa-sha2-* signature algorithms while maintaining ssh-rsa key type.
+    static var authAlgorithmName: String { keyPrefix }
+}
+
 internal extension NIOSSHPrivateKeyProtocol {
     var keyPrefix: String {
         Self.keyPrefix
+    }
+
+    var authAlgorithmName: String {
+        Self.authAlgorithmName
     }
 }

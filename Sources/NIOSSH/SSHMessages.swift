@@ -1304,7 +1304,10 @@ extension ByteBuffer {
         case .publicKey(.known(key: let key, signature: let signature)):
             writtenBytes += self.writeSSHString("publickey".utf8)
             writtenBytes += self.writeSSHBoolean(signature != nil)
-            writtenBytes += self.writeSSHString(key.keyPrefix)
+            let authAlgo = String(decoding: key.authAlgorithmName, as: UTF8.self)
+            let keyPrefix = String(decoding: key.keyPrefix, as: UTF8.self)
+            print("🔐🔐 SSH Auth Packet - authAlgorithm: '\(authAlgo)', keyPrefix: '\(keyPrefix)', hasSig: \(signature != nil)")
+            writtenBytes += self.writeSSHString(key.authAlgorithmName)
             writtenBytes += self.writeCompositeSSHString { buffer in
                 buffer.writeSSHHostKey(key)
             }
