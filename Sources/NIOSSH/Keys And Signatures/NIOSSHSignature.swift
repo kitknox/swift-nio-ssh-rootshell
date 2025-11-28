@@ -121,8 +121,8 @@ extension NIOSSHSignature.BackingSignature: Hashable {
     }
 }
 
-extension ByteBuffer {
-    /// Writes an SSH host key to this `ByteBuffer`.
+public extension ByteBuffer {
+    /// Writes an SSH signature to this `ByteBuffer`.
     @discardableResult
     mutating func writeSSHSignature(_ sig: NIOSSHSignature) -> Int {
         switch sig.backingSignature {
@@ -140,8 +140,10 @@ extension ByteBuffer {
             return writtenBytes
         }
     }
+}
 
-    private mutating func writeEd25519Signature(signatureBytes: NIOSSHSignature.BackingSignature.RawBytes) -> Int {
+extension ByteBuffer {
+    mutating func writeEd25519Signature(signatureBytes: NIOSSHSignature.BackingSignature.RawBytes) -> Int {
         // The Ed25519 signature format is easy: the ed25519 signature prefix, followed by
         // the raw signature bytes.
         var writtenLength = self.writeSSHString(NIOSSHSignature.ed25519SignaturePrefix)

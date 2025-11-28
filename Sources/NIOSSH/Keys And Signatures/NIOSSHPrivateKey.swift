@@ -159,6 +159,35 @@ extension NIOSSHPrivateKey {
 }
 
 public extension NIOSSHPrivateKey {
+    /// Signs raw data using this private key.
+    /// - Parameter data: The raw data to sign.
+    /// - Returns: The signature.
+    /// - Throws: If signing fails.
+    func signature<D: DataProtocol>(for data: D) throws -> NIOSSHSignature {
+        switch self.backingKey {
+        case .ed25519(let key):
+            let signature = try key.signature(for: data)
+            return NIOSSHSignature(backingSignature: .ed25519(.data(signature)))
+        case .ecdsaP256(let key):
+            let signature = try key.signature(for: data)
+            return NIOSSHSignature(backingSignature: .ecdsaP256(signature))
+        case .ecdsaP384(let key):
+            let signature = try key.signature(for: data)
+            return NIOSSHSignature(backingSignature: .ecdsaP384(signature))
+        case .ecdsaP521(let key):
+            let signature = try key.signature(for: data)
+            return NIOSSHSignature(backingSignature: .ecdsaP521(signature))
+        case .custom(let key):
+            let signature = try key.signature(for: data)
+            return NIOSSHSignature(backingSignature: .custom(signature))
+        #if canImport(Darwin)
+        case .secureEnclaveP256(let key):
+            let signature = try key.signature(for: data)
+            return NIOSSHSignature(backingSignature: .ecdsaP256(signature))
+        #endif
+        }
+    }
+
     /// Obtains the public key for a corresponding private key.
     var publicKey: NIOSSHPublicKey {
         switch self.backingKey {

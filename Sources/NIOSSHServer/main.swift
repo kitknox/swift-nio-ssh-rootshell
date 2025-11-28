@@ -68,6 +68,9 @@ func sshChildChannelInitializer(_ channel: Channel, _ channelType: SSHChannelTyp
         }
     case .forwardedTCPIP:
         return channel.eventLoop.makeFailedFuture(SSHServerError.invalidChannelType)
+    case .authAgent:
+        // Agent forwarding not supported in this example server
+        return channel.eventLoop.makeFailedFuture(SSHServerError.invalidChannelType)
     }
 }
 

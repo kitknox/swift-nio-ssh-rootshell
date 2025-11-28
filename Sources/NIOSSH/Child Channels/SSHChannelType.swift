@@ -35,6 +35,10 @@ public enum SSHChannelType: Equatable, NIOSSHSendable {
 
     /// "Forwarded TCP/IP" is a connection that was accepted from a listening socket and is being forwarded to the client.
     case forwardedTCPIP(ForwardedTCPIP)
+
+    /// "Auth Agent" is an SSH agent forwarding channel (auth-agent@openssh.com).
+    /// Used to forward SSH agent requests from the remote server back to the local agent.
+    case authAgent
 }
 
 public extension SSHChannelType {
@@ -114,6 +118,8 @@ extension SSHChannelType {
             self = .directTCPIP(.init(targetHost: message.hostToConnectTo, targetPort: message.portToConnectTo, originatorAddress: message.originatorAddress))
         case .forwardedTCPIP(let message):
             self = .forwardedTCPIP(.init(listeningHost: message.hostListening, listeningPort: message.portListening, originatorAddress: message.originatorAddress))
+        case .authAgent:
+            self = .authAgent
         }
     }
 }
@@ -127,6 +133,8 @@ extension SSHMessage.ChannelOpenMessage.ChannelType {
             self = .directTCPIP(.init(hostToConnectTo: data.targetHost, portToConnectTo: data._targetPort, originatorAddress: data.originatorAddress))
         case .forwardedTCPIP(let data):
             self = .forwardedTCPIP(.init(hostListening: data.listeningHost, portListening: data._listeningPort, originatorAddress: data.originatorAddress))
+        case .authAgent:
+            self = .authAgent
         }
     }
 }
