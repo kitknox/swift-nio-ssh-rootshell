@@ -293,6 +293,28 @@ extension NIOSSHHandler {
         self.sendGlobalRequestsIfPossible()
     }
 
+    /// Sends a custom global request by name. This is commonly used for keepalive requests or vendor-specific extensions.
+    ///
+    /// Example usage for keepalive:
+    /// ```swift
+    /// let promise = channel.eventLoop.makePromise(of: ByteBuffer?.self)
+    /// sshHandler.sendCustomGlobalRequest(name: "keepalive@openssh.com", wantReply: true, data: nil, promise: promise)
+    /// ```
+    ///
+    /// - Parameters:
+    ///     - name: The request name string (e.g., "keepalive@openssh.com")
+    ///     - wantReply: Whether to request a reply from the server
+    ///     - data: Optional additional data to include in the request
+    ///     - promise: An `EventLoopPromise` that will be fulfilled when the response is received (if wantReply is true).
+    ///
+    /// This function is **not** thread-safe: it may only be called from on the channel.
+    public func sendCustomGlobalRequest(name: String, wantReply: Bool, data: ByteBuffer?, promise: EventLoopPromise<ByteBuffer?>? = nil) {
+        let buffer = data ?? ByteBufferAllocator().buffer(capacity: 0)
+        let message = SSHMessage.GlobalRequestMessage(wantReply: wantReply, type: .unknown(name, buffer))
+        self.pendingGlobalRequests.append((value: message, promise: promise.map { .unknown($0) }))
+        self.sendGlobalRequestsIfPossible()
+    }
+
     private func dropAllPendingGlobalRequests(_ error: Error) {
         while let next = self.pendingGlobalRequests.popFirst() {
             next.1?.fail(error)
