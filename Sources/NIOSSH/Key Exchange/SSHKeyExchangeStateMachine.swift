@@ -519,14 +519,24 @@ struct SSHKeyExchangeStateMachine {
     }
 
     /// The encryption algorithms supported by this peer, in order of preference.
+    /// Order-preserving deduplication: ETM and non-ETM schemes share cipher names.
     private var supportedEncryptionAlgorithms: [Substring] {
-        self.transportProtectionSchemes.map { Substring($0.cipherName) }
+        var seen = Set<Substring>()
+        return self.transportProtectionSchemes.compactMap { scheme in
+            let name = Substring(scheme.cipherName)
+            return seen.insert(name).inserted ? name : nil
+        }
     }
 
     /// The MAC algorithms supported by this peer, in order of preference.
+    /// Order-preserving deduplication: multiple schemes may advertise the same MAC.
     private var supportedMacAlgorithms: [Substring] {
+        var seen = Set<Substring>()
         let schemes = self.transportProtectionSchemes.reduce([Substring]()) { schemes, transport in
-            schemes + transport.macNames.map { Substring($0) }
+            schemes + transport.macNames.compactMap { name in
+                let s = Substring(name)
+                return seen.insert(s).inserted ? s : nil
+            }
         }
 
         // We do a weird thing here: if there are no MAC schemes, we lie and put one in. This is
