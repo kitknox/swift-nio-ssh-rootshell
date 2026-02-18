@@ -104,12 +104,26 @@ struct SSHPacketParser {
                 return nil
             }
 
+            // CRITICAL: transition state BEFORE the length check.
+            // decryptFirstBlock() already modified the buffer in-place above.
+            // If we throw while still in encryptedWaitingForLength, the next call
+            // re-decrypts the already-decrypted first block → permanent corruption
+            // (parsed=0 on every subsequent channelRead).
+            self.state = .encryptedWaitingForBytes(length, protection)
+
+            // Allow transport overhead (framing, padding, MAC ≈ 30-50 bytes) on top
+            // of maximumPacketSize. Without this headroom, a ChannelData carrying
+            // exactly maximumPacketSize bytes of payload is rejected because its
+            // transport packet is ~32 bytes larger.
+            if length >= self.maximumPacketSize + 256 {
+                throw NIOSSHError.invalidEncryptedPacketLength
+            }
+
             if let message = try self.parseCiphertext(length: length, protection: protection) {
                 self.state = .encryptedWaitingForLength(protection)
                 self.sequenceNumber = self.sequenceNumber &+ 1
                 return message
             }
-            self.state = .encryptedWaitingForBytes(length, protection)
             return nil
         case .encryptedWaitingForBytes(let length, let protection):
             if let message = try self.parseCiphertext(length: length, protection: protection) {
@@ -181,9 +195,10 @@ struct SSHPacketParser {
         let packetLength = self.buffer.getInteger(at: self.buffer.readerIndex, as: UInt32.self)!
         let decryptedLength = packetLength + UInt32(protection.macBytes)
 
-        if decryptedLength >= self.maximumPacketSize {
-            throw NIOSSHError.invalidEncryptedPacketLength
-        }
+        // Length check moved to nextPacket() — see comment there.
+        // Must NOT throw here because decryptFirstBlock already modified the
+        // buffer in-place. Throwing leaves the parser in encryptedWaitingForLength,
+        // causing double-decryption of the first block on the next call.
 
         return decryptedLength
     }

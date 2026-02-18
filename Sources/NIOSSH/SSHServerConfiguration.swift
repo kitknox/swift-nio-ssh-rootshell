@@ -34,7 +34,20 @@ public struct SSHServerConfiguration {
     
     /// The maximum packet size that this NIOSSH server will accept
     public var maximumPacketSize = SSHPacketParser.defaultMaximumPacketSize
-    
+
+    /// The initial receive window size advertised for each SSH child channel.
+    /// OpenSSH uses 64 * 32KiB (2MiB) for TCP forwarding channels.
+    public var initialChannelWindowSize = SSHPacketParser.defaultMaximumPacketSize * 64
+
+    /// The window size advertised in SSH_MSG_CHANNEL_OPEN messages.
+    /// When smaller than `initialChannelWindowSize`, channels start with a small
+    /// window and ramp up via WindowAdjust. 0 means use `initialChannelWindowSize`.
+    public var channelOpenWindowSize: Int = 0
+
+    /// Maximum total outstanding WindowAdjust bytes across all child channels.
+    /// 0 means unlimited (default).
+    public var maximumAggregateWindowSize: Int = 0
+
     /// The trusted certificate authority public keys for user authentication.
     /// When set, users presenting certificates signed by these CAs will be authenticated
     /// if the certificate is valid and the principal matches.

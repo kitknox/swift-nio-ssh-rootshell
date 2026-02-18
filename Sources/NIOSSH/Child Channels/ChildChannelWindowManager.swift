@@ -19,10 +19,15 @@ struct ChildChannelWindowManager {
 
     private var currentWindowSize: UInt32
 
-    init(targetWindowSize: UInt32) {
+    init(targetWindowSize: UInt32, channelOpenWindowSize: UInt32? = nil) {
         self.targetWindowSize = targetWindowSize
         self.bufferedBytes = 0
-        self.currentWindowSize = targetWindowSize
+        // When channelOpenWindowSize is provided (and smaller than target),
+        // currentWindowSize starts at the smaller value — matching what's
+        // advertised in SSH_MSG_CHANNEL_OPEN.  After the first data arrives
+        // and is delivered, unbufferBytes() sees the window is well below
+        // target and immediately issues a WindowAdjust to ramp up.
+        self.currentWindowSize = channelOpenWindowSize ?? targetWindowSize
     }
 }
 
@@ -40,6 +45,20 @@ extension ChildChannelWindowManager {
 
         self.bufferedBytes = newBufferedBytes
         self.currentWindowSize = newWindowSize
+    }
+
+    /// Check whether unbuffering `bytes` would produce a WindowAdjust increment,
+    /// without modifying state. Used by the aggregate window budget to decide
+    /// whether to defer the adjustment.
+    func peekUnbuffer(bytes: Int) -> Increment? {
+        let bytes = UInt32(bytes)
+        let newBufferedBytes = self.bufferedBytes - bytes
+        let availableWindow = self.currentWindowSize + newBufferedBytes
+        if availableWindow > (self.targetWindowSize / 2) {
+            return nil
+        } else {
+            return Increment(rawValue: self.targetWindowSize - availableWindow)
+        }
     }
 
     mutating func unbufferBytes(_ bytes: Int) -> Increment? {

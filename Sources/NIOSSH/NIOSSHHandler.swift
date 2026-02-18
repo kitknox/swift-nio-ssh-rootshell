@@ -73,7 +73,15 @@ public final class NIOSSHHandler {
         self.pendingChannelInitializations = CircularBuffer(initialCapacity: 4)
         self.pendingGlobalRequests = CircularBuffer(initialCapacity: 4)
         self.pendingGlobalRequestResponses = CircularBuffer(initialCapacity: 4)
-        self.multiplexer = SSHChannelMultiplexer(delegate: self, allocator: allocator, childChannelInitializer: inboundChildChannelInitializer, maximumPacketSize: role.maximumPacketSize)
+        self.multiplexer = SSHChannelMultiplexer(
+            delegate: self,
+            allocator: allocator,
+            childChannelInitializer: inboundChildChannelInitializer,
+            maximumPacketSize: role.maximumPacketSize,
+            initialWindowSize: role.initialChannelWindowSize,
+            channelOpenWindowSize: role.channelOpenWindowSize,
+            aggregateWindowBudget: role.maximumAggregateWindowSize
+        )
     }
 }
 
@@ -157,8 +165,12 @@ extension NIOSSHHandler: ChannelDuplexHandler {
 
     public func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         self.expectingChannelReadComplete = true
+        NIOSSHDebug.shared.increment("niossh.channelRead")
 
         var data = self.unwrapInboundIn(data)
+        let byteCount = data.readableBytes
+        NIOSSHDebug.shared.increment("niossh.channelRead.bytes", by: Int64(byteCount))
+        self.multiplexer?.recordChannelRead(tcpBytes: byteCount)
         self.stateMachine.bufferInboundData(&data)
 
         do {
@@ -171,16 +183,62 @@ extension NIOSSHHandler: ChannelDuplexHandler {
     }
 
     public func channelReadComplete(context: ChannelHandlerContext) {
+        let t0 = NIOSSHDebug.nowUs()
+
         self.multiplexer?.parentChannelReadComplete()
+        let t1 = NIOSSHDebug.nowUs()
+        NIOSSHDebug.shared.increment("niossh.readComplete.multiplexerUs", by: t1 - t0)
+
         self.expectingChannelReadComplete = false
 
         if self.pendingWrite {
             self.pendingWrite = false
             context.flush()
         }
+        let t2 = NIOSSHDebug.nowUs()
+        NIOSSHDebug.shared.increment("niossh.readComplete.flushUs", by: t2 - t1)
 
+        let pendingCount = self.pendingChannelInitializations.count
         self.createPendingChannelsIfPossible()
+        let dispatched = pendingCount - self.pendingChannelInitializations.count
+        if dispatched > 0 {
+            NIOSSHDebug.shared.increment("niossh.createChannel.dispatched", by: Int64(dispatched))
+        }
+        if pendingCount > 0 {
+            NIOSSHDebug.shared.set("niossh.pendingChannelInits", value: Int64(self.pendingChannelInitializations.count))
+        }
+
         self.sendGlobalRequestsIfPossible()
+        let t3 = NIOSSHDebug.nowUs()
+
+        NIOSSHDebug.shared.increment("niossh.readComplete.totalUs", by: t3 - t0)
+        NIOSSHDebug.shared.increment("niossh.readComplete.count")
+
+        // Log slow readComplete cycles
+        let totalUs = t3 - t0
+        if totalUs > 1000 { // > 1ms
+            NIOSSHDebug.shared.event("slow-readComplete \(totalUs)us mux=\(t1-t0)us flush=\(t2-t1)us create=\(t3-t2)us")
+        }
+
+        // Track parent TCP channel writability — if non-writable, the TCP pipe is saturated
+        let writable = context.channel.isWritable
+        NIOSSHDebug.shared.set("niossh.tcp.isWritable", value: writable ? 1 : 0)
+        if !writable {
+            NIOSSHDebug.shared.increment("niossh.tcp.notWritable")
+        }
+    }
+
+    public func channelWritabilityChanged(context: ChannelHandlerContext) {
+        let writable = context.channel.isWritable
+        NIOSSHDebug.shared.set("niossh.tcp.isWritable", value: writable ? 1 : 0)
+        NIOSSHDebug.shared.tsLog("TCP-WRITABLE \(writable)")
+        // Propagate TCP writability to all child channels so they stop writing
+        // ChannelData into the parent's outbound buffer when TCP is saturated.
+        // Without this, child channels keep isWritable=true (the initial value
+        // from channel creation) and the VPNChannelBridge never applies
+        // backpressure — causing unbounded parent buffer growth during uploads.
+        self.multiplexer?.parentChannelWritabilityChanged(newValue: writable)
+        context.fireChannelWritabilityChanged()
     }
 
     private func writeMessage(_ multiMessage: SSHMultiMessage, context: ChannelHandlerContext, promise: EventLoopPromise<Void>? = nil) throws {
@@ -197,10 +255,12 @@ extension NIOSSHHandler: ChannelDuplexHandler {
     private func processInboundMessageResult(_ result: SSHConnectionStateMachine.StateMachineInboundProcessResult, context: ChannelHandlerContext) throws {
         switch result {
         case .emitMessage(let message):
+            self.multiplexer?.recordStateMachineResult(isChannel: false)
             try self.writeMessage(message, context: context)
         case .noMessage:
-            break
+            self.multiplexer?.recordStateMachineResult(isChannel: false)
         case .possibleFutureMessage(let future):
+            self.multiplexer?.recordStateMachineResult(isChannel: false)
             // TODO(cory): This is not right, but for now it's good enough.
             future.whenComplete { result in
                 switch result {
@@ -220,15 +280,21 @@ extension NIOSSHHandler: ChannelDuplexHandler {
                 }
             }
         case .forwardToMultiplexer(let message):
+            self.multiplexer?.recordStateMachineResult(isChannel: true)
+            self.multiplexer?.recordInboundMessage(message)
             try self.multiplexer?.receiveMessage(message)
         case .globalRequest(let message):
+            self.multiplexer?.recordStateMachineResult(isChannel: false)
             try self.handleGlobalRequest(message)
         case .globalRequestResponse(let response):
+            self.multiplexer?.recordStateMachineResult(isChannel: false)
             try self.handleGlobalRequestResponse(response)
         case .disconnect:
+            self.multiplexer?.recordStateMachineResult(isChannel: false)
             // Welp, we immediately have to close.
             context.close(promise: nil)
         case .event(let event):
+            self.multiplexer?.recordStateMachineResult(isChannel: false)
             context.fireUserInboundEventTriggered(event)
         }
     }
@@ -246,6 +312,7 @@ extension NIOSSHHandler {
     ///     - channelType: The type of the channel to create. Defaults to ``SSHChannelType/session`` for running remote processes.
     ///     - channelInitializer: A callback that will be invoked to initialize the channel.
     public func createChannel(_ promise: EventLoopPromise<Channel>? = nil, channelType: SSHChannelType = .session, _ channelInitializer: ((Channel, SSHChannelType) -> EventLoopFuture<Void>)?) {
+        NIOSSHDebug.shared.increment("niossh.createChannel.queued")
         self.pendingChannelInitializations.append((promise: promise, channelType: channelType, initializer: channelInitializer))
         self.createPendingChannelsIfPossible()
     }
@@ -490,6 +557,7 @@ extension NIOSSHHandler: SSHMultiplexerDelegate {
             return
         }
 
+        NIOSSHDebug.shared.increment("niossh.childWrite")
         do {
             try self.writeMessage(SSHMultiMessage(message), context: context, promise: promise)
         } catch {
@@ -501,7 +569,10 @@ extension NIOSSHHandler: SSHMultiplexerDelegate {
         // If a child channel flushes and we aren't in a channelReadComplete loop, we need to flush. Otherwise
         // we can just wait.
         if !self.expectingChannelReadComplete {
+            NIOSSHDebug.shared.increment("niossh.childFlush.immediate")
             self.context?.flush()
+        } else {
+            NIOSSHDebug.shared.increment("niossh.childFlush.deferred")
         }
     }
 }

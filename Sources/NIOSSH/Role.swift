@@ -68,4 +68,31 @@ public enum SSHConnectionRole {
             return server.maximumPacketSize
         }
     }
+
+    internal var initialChannelWindowSize: Int {
+        switch self {
+        case .client(let client):
+            return client.initialChannelWindowSize
+        case .server(let server):
+            return server.initialChannelWindowSize
+        }
+    }
+
+    internal var channelOpenWindowSize: Int {
+        switch self {
+        case .client(let client):
+            return client.channelOpenWindowSize
+        case .server(let server):
+            return server.channelOpenWindowSize
+        }
+    }
+
+    internal var maximumAggregateWindowSize: Int {
+        switch self {
+        case .client(let client):
+            return client.maximumAggregateWindowSize
+        case .server(let server):
+            return server.maximumAggregateWindowSize
+        }
+    }
 }

@@ -428,8 +428,16 @@ extension ChildChannelStateMachine {
             // In the idle state we haven't either sent a channel open or received one. This is not really possible.
             preconditionFailure("Somehow received channel EOF for idle channel")
 
-        case .requestedLocally, .requestedRemotely, .closedLocally, .closedRemotely, .closed:
+        case .requestedLocally, .requestedRemotely:
             preconditionFailure("Sent channel window adjust on channel in invalid state")
+
+        case .closedLocally, .closedRemotely, .closed:
+            // A WindowAdjust can race with channel close: data delivered before
+            // close triggers a deferred WindowAdjust that fires after the close
+            // is sent. This is harmless — the remote will ignore window adjusts
+            // for a closing channel. Throw instead of crashing so the caller
+            // (processOutboundMessage) handles it gracefully via errorEncountered.
+            throw NIOSSHError.protocolViolation(protocolName: "channel", violation: "Sent window adjust on closing channel.")
         }
     }
 

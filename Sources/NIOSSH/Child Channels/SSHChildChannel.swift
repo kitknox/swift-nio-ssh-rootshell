@@ -71,6 +71,11 @@ final class SSHChildChannel {
     /// once we've activated. After activation this list should be empty.
     private var bufferedOutboundOperations: CircularBuffer<OutboundControlOperation> = CircularBuffer(initialCapacity: 8)
 
+    /// Bytes delivered to the pipeline but not yet unbuffered in the window manager,
+    /// because the multiplexer's aggregate window budget was exhausted.
+    /// Flushed when the multiplexer frees budget.
+    internal var deferredConsumption: Int = 0
+
     /// An object that controls whether this channel should be writable.
     private var writabilityManager: ChildChannelWritabilityManager
 
@@ -108,6 +113,7 @@ final class SSHChildChannel {
                               initializer: Initializer?,
                               localChannelID: UInt32,
                               targetWindowSize: Int32,
+                              channelOpenWindowSize: Int32? = nil,
                               initialOutboundWindowSize: UInt32)
     {
         self.init(allocator: allocator,
@@ -116,8 +122,14 @@ final class SSHChildChannel {
                   initializer: initializer,
                   initialState: .init(localChannelID: localChannelID),
                   targetWindowSize: targetWindowSize,
+                  channelOpenWindowSize: channelOpenWindowSize,
                   initialOutboundWindowSize: initialOutboundWindowSize)
     }
+
+    /// The window size advertised in SSH_MSG_CHANNEL_OPEN / CHANNEL_OPEN_CONFIRMATION.
+    /// May be smaller than `windowManager.targetWindowSize` when using decoupled windows
+    /// to avoid TCP pipe saturation while maintaining high steady-state throughput.
+    private let channelOpenWindowSize: UInt32
 
     private init(allocator: ByteBufferAllocator,
                  parent: Channel,
@@ -125,15 +137,19 @@ final class SSHChildChannel {
                  initializer: Initializer?,
                  initialState: ChildChannelStateMachine,
                  targetWindowSize: Int32,
+                 channelOpenWindowSize: Int32? = nil,
                  initialOutboundWindowSize: UInt32)
     {
+        let openWin = channelOpenWindowSize.map { UInt32($0) }
+        self.channelOpenWindowSize = openWin ?? UInt32(targetWindowSize)
         self.allocator = allocator
         self.closePromise = parent.eventLoop.makePromise()
         self.parent = parent
         self.eventLoop = parent.eventLoop
         self.multiplexer = multiplexer
         self.initializer = initializer
-        self.windowManager = ChildChannelWindowManager(targetWindowSize: UInt32(targetWindowSize))
+        self.windowManager = ChildChannelWindowManager(targetWindowSize: UInt32(targetWindowSize),
+                                                       channelOpenWindowSize: openWin)
         self._isWritable = .init(true)
         self._isActive = .init(false)
         self.state = initialState
@@ -317,12 +333,68 @@ extension SSHChildChannel: Channel, ChannelCore {
     }
 
     public func close0(error: Error, mode: CloseMode, promise: EventLoopPromise<Void>?) {
+        // Pre-activation channels (idle/requestedLocally) can't be closed through the
+        // normal path because: (a) bufferOutboundEvent buffers the close until
+        // ChannelOpenConfirmation, which never arrives for timed-out channels; and
+        // (b) closedWhileOpen() force-unwraps remoteChannelIdentifier which is nil.
+        // Handle this directly by forcing the state to closed.
+        if mode == .all && self.state.awaitingActivation && !self.state.isClosed {
+            self._closePreActivationChannel(promise: promise)
+            return
+        }
+
         // Can't process this right now.
         if self.bufferOutboundEvent(.close(error, mode, promise)) {
             return
         }
 
         self._actuallyClose0(error: error, mode: mode, promise: promise)
+    }
+
+    /// Forcibly close a channel that hasn't been confirmed yet.
+    /// We can't send ChannelClose because we don't know the remote channel ID.
+    /// Instead, force state to closed and tell the multiplexer to tolerate late
+    /// ChannelOpenConfirmation/Failure messages for this channel ID.
+    private func _closePreActivationChannel(promise: EventLoopPromise<Void>?) {
+        if let promise = promise {
+            if let pendingPromise = self.pendingClosePromise {
+                pendingPromise.futureResult.cascade(to: promise)
+            } else {
+                self.pendingClosePromise = promise
+            }
+        }
+
+        let channelID = self.state.localChannelIdentifier
+        NIOSSHDebug.shared.tsLog("PRE-ACTIVATION-CLOSE id=\(channelID)")
+
+        // Force state to closed (handles idle and requestedLocally)
+        self.state.receiveTCPEOF()
+
+        guard !self.didClose else { return }
+        self.didClose = true
+
+        self.deliverPendingReads()
+        self.failPendingWrites(error: ChannelError.eof)
+        self.failPendingOutboundEvents(error: ChannelError.eof)
+        if let promise = self.pendingClosePromise {
+            self.pendingClosePromise = nil
+            promise.succeed(())
+        }
+        if let promise = self.userActivatePromise {
+            self.userActivatePromise = nil
+            promise.fail(ChannelError.eof)
+        }
+
+        self.notifyChannelInactive()
+
+        self.eventLoop.execute {
+            self.removeHandlers(pipeline: self.pipeline)
+            self.closePromise.succeed(())
+            // expectClose: true so that late ChannelOpenConfirmation/Failure
+            // from the server for this channel ID is silently ignored
+            // instead of throwing a protocol violation.
+            self.multiplexer.childChannelErrored(channelID: channelID, expectClose: true)
+        }
     }
 
     private func _actuallyClose0(error: Error, mode: CloseMode, promise: EventLoopPromise<Void>?) {
@@ -478,7 +550,7 @@ extension SSHChildChannel: Channel, ChannelCore {
             // We need to send a channelOpenSuccess.
             let message = SSHMessage.ChannelOpenConfirmationMessage(recipientChannel: self.state.remoteChannelIdentifier!,
                                                                     senderChannel: self.state.localChannelIdentifier,
-                                                                    initialWindowSize: self.windowManager.targetWindowSize,
+                                                                    initialWindowSize: self.channelOpenWindowSize,
                                                                     maximumPacketSize: UInt32(self.multiplexer.maximumPacketSize)) // This is a weirdly hard-coded choice.
             self.processOutboundMessage(.channelOpenConfirmation(message), promise: nil)
             self.writePendingToMultiplexer()
@@ -486,7 +558,7 @@ extension SSHChildChannel: Channel, ChannelCore {
             // We need to request the channel. We must have the channel by now.
             let message = SSHMessage.ChannelOpenMessage(type: .init(self.type!),
                                                         senderChannel: self.state.localChannelIdentifier,
-                                                        initialWindowSize: self.windowManager.targetWindowSize,
+                                                        initialWindowSize: self.channelOpenWindowSize,
                                                         maximumPacketSize: UInt32(self.multiplexer.maximumPacketSize))
             self.processOutboundMessage(.channelOpen(message), promise: nil)
             self.writePendingToMultiplexer()
@@ -642,8 +714,13 @@ private extension SSHChildChannel {
     ///
     /// This is sometimes done when the channel itself is closed, because data loss in these circumstances is unacceptable.
     private func deliverPendingReads() {
+        var readCount = 0
         while self.pendingReads.count > 0 {
             self.deliverSingleRead(self.pendingReads.removeFirst())
+            readCount += 1
+        }
+        if readCount > 0 {
+            NIOSSHDebug.shared.increment("niossh.child.readsDelivered", by: Int64(readCount))
         }
         self.pipeline.fireChannelReadComplete()
     }
@@ -651,15 +728,71 @@ private extension SSHChildChannel {
     private func deliverSingleRead(_ data: PendingContent) {
         switch data {
         case .data(let data):
+            let byteCount = data.data.readableBytes
+            NIOSSHDebug.shared.increment("niossh.child.bytesDelivered", by: Int64(byteCount))
             // We only futz with the window manager if the channel is not already closed.
-            if !self.didClose, let increment = self.windowManager.unbufferBytes(data.data.readableBytes) {
-                let update = SSHMessage.ChannelWindowAdjustMessage(recipientChannel: self.state.remoteChannelIdentifier!, bytesToAdd: UInt32(increment))
-                self.processOutboundMessage(.channelWindowAdjust(update), promise: nil)
+            if !self.didClose {
+                // Peek first: would unbuffering produce a WindowAdjust?
+                if let increment = self.windowManager.peekUnbuffer(bytes: byteCount) {
+                    // Check the multiplexer's aggregate budget before committing
+                    let channelID = self.state.localChannelIdentifier
+                    if self.multiplexer.requestWindowAdjust(channelID: channelID, bytes: Int(increment.rawValue)) {
+                        // Budget allows — actually unbuffer and send the WindowAdjust
+                        _ = self.windowManager.unbufferBytes(byteCount)
+                        NIOSSHDebug.shared.increment("niossh.child.windowAdjust")
+                        NIOSSHDebug.shared.increment("niossh.child.windowAdjust.bytes", by: Int64(increment.rawValue))
+                        let update = SSHMessage.ChannelWindowAdjustMessage(recipientChannel: self.state.remoteChannelIdentifier!, bytesToAdd: UInt32(increment))
+                        self.processOutboundMessage(.channelWindowAdjust(update), promise: nil)
+                    } else {
+                        // Budget exhausted — don't unbuffer, defer for later
+                        self.deferredConsumption += byteCount
+                        NIOSSHDebug.shared.increment("niossh.child.windowAdjust.budgetDenied")
+                    }
+                } else {
+                    // No WindowAdjust needed — just unbuffer (no budget impact)
+                    _ = self.windowManager.unbufferBytes(byteCount)
+                }
             }
             self.pipeline.fireChannelRead(NIOAny(data))
 
         case .eof:
             self.pipeline.fireUserInboundEventTriggered(ChannelEvent.inputClosed)
+        }
+    }
+
+    /// Called by the multiplexer when aggregate window budget frees up.
+    /// Flushes deferred consumption by unbuffering and sending the WindowAdjust.
+    /// Returns true if this channel no longer needs adjustment (deferred cleared or channel closed).
+    internal func flushDeferredWindowAdjust() -> Bool {
+        guard deferredConsumption > 0, !self.didClose else {
+            deferredConsumption = 0
+            return true
+        }
+
+        // Try to unbuffer the deferred bytes and get a WindowAdjust increment
+        if let increment = self.windowManager.peekUnbuffer(bytes: deferredConsumption) {
+            let channelID = self.state.localChannelIdentifier
+            if self.multiplexer.requestWindowAdjust(channelID: channelID, bytes: Int(increment.rawValue)) {
+                _ = self.windowManager.unbufferBytes(deferredConsumption)
+                NIOSSHDebug.shared.increment("niossh.child.windowAdjust.deferred")
+                NIOSSHDebug.shared.increment("niossh.child.windowAdjust.bytes", by: Int64(increment.rawValue))
+                let update = SSHMessage.ChannelWindowAdjustMessage(
+                    recipientChannel: self.state.remoteChannelIdentifier!,
+                    bytesToAdd: UInt32(increment)
+                )
+                self.processOutboundMessage(.channelWindowAdjust(update), promise: nil)
+                self.writePendingToMultiplexer()
+                deferredConsumption = 0
+                return true
+            } else {
+                // Still over budget
+                return false
+            }
+        } else {
+            // No increment needed — just unbuffer
+            _ = self.windowManager.unbufferBytes(deferredConsumption)
+            deferredConsumption = 0
+            return true
         }
     }
 
