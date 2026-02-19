@@ -210,6 +210,8 @@ extension SSHChannelMultiplexer {
         self.channels.removeValue(forKey: channelID)
         self.channelCreationTimestamps.removeValue(forKey: channelID)
         self.cleanupChannelCredit(channelID: channelID)
+        NIOSSHDebug.shared.increment("niossh.multiplexer.childErrored")
+        NIOSSHDebug.shared.tsLog("CHAN-ERRORED id=\(channelID) totalCh=\(self.channels.count) expectClose=\(expectClose)")
 
         if expectClose {
             // We keep track of the errored channel because we will tolerate receiving a close for it.
