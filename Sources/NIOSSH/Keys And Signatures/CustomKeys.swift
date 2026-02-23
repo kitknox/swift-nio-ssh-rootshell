@@ -76,11 +76,7 @@ internal extension NIOSSHPublicKeyProtocol {
     }
 
     var authAlgorithmName: String {
-        let staticValue = Self.authAlgorithmName
-        let fullTypeName = String(reflecting: Self.self)
-        print("🔐🔐🔐 Protocol Extension - FullType: \(fullTypeName)")
-        print("🔐🔐🔐 Protocol Extension - staticValue: '\(staticValue)', publicKeyPrefix: '\(Self.publicKeyPrefix)'")
-        return staticValue
+        Self.authAlgorithmName
     }
 }
 

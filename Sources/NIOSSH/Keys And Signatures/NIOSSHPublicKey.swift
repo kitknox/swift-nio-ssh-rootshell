@@ -213,12 +213,9 @@ extension NIOSSHPublicKey {
             let keyPrefix = publicKey.publicKeyPrefix
             // Special handling for RSA keys: use rsa-sha2-256 instead of deprecated ssh-rsa
             if keyPrefix == "ssh-rsa" {
-                print("🔐🔐 Custom Key: Detected RSA key, using rsa-sha2-256 for auth")
                 return "rsa-sha2-256".utf8
             }
-            let authAlgo = publicKey.authAlgorithmName
-            print("🔐🔐 Custom Key authAlgorithmName: \(authAlgo), type: \(type(of: publicKey))")
-            return authAlgo.utf8
+            return publicKey.authAlgorithmName.utf8
         case .certified(let base):
             return base.keyPrefix
         }
@@ -229,21 +226,40 @@ extension NIOSSHPublicKey {
     ]
 
     static var knownAlgorithms: [String.UTF8View] {
-        var algorithms = bundledAlgorithms
-        for algorithm in customPublicKeyAlgorithms {
+        // Preferred custom algorithms go first (highest priority)
+        var algorithms = [String.UTF8View]()
+        for algorithm in preferredPublicKeyAlgorithms {
             let keyPrefix = algorithm.publicKeyPrefix
-            // Add the public key prefix (e.g., "ssh-rsa")
             algorithms.append(keyPrefix.utf8)
-            print("🔐🔐 SSH Capability - Added algorithm: \(keyPrefix)")
-            // Special handling for RSA: also announce rsa-sha2-256 support
             if keyPrefix == "ssh-rsa" {
                 algorithms.append("rsa-sha2-256".utf8)
-                print("🔐🔐 SSH Capability - Added rsa-sha2-256 for RSA key")
             }
         }
-        let algoNames = algorithms.map { String(decoding: $0, as: UTF8.self) }.joined(separator: ", ")
-        print("🔐🔐 SSH Known Algorithms: [\(algoNames)]")
+
+        // Then bundled algorithms (ed25519, ecdsa)
+        algorithms.append(contentsOf: bundledAlgorithms)
+
+        // Then regular custom algorithms (appended after bundled)
+        for algorithm in customPublicKeyAlgorithms {
+            let keyPrefix = algorithm.publicKeyPrefix
+            algorithms.append(keyPrefix.utf8)
+            if keyPrefix == "ssh-rsa" {
+                algorithms.append("rsa-sha2-256".utf8)
+            }
+        }
         return algorithms
+    }
+
+    static var preferredPublicKeyAlgorithms: [NIOSSHPublicKeyProtocol.Type] {
+        _CustomAlgorithms.preferredPublicKeyAlgorithmsLock.withLock {
+            _CustomAlgorithms.preferredPublicKeyAlgorithms
+        }
+    }
+
+    static var preferredSignatures: [NIOSSHSignatureProtocol.Type] {
+        _CustomAlgorithms.preferredPublicKeyAlgorithmsLock.withLock {
+            _CustomAlgorithms.preferredSignatures
+        }
     }
 
     static var customPublicKeyAlgorithms: [NIOSSHPublicKeyProtocol.Type] {
@@ -256,6 +272,16 @@ extension NIOSSHPublicKey {
         _CustomAlgorithms.signaturesLock.withLock {
             _CustomAlgorithms.signatures
         }
+    }
+
+    /// All custom public key algorithms (preferred + regular), used for parsing.
+    static var allCustomPublicKeyAlgorithms: [NIOSSHPublicKeyProtocol.Type] {
+        preferredPublicKeyAlgorithms + customPublicKeyAlgorithms
+    }
+
+    /// All custom signatures (preferred + regular), used for parsing.
+    static var allCustomSignatures: [NIOSSHSignatureProtocol.Type] {
+        preferredSignatures + customSignatures
     }
 }
 
@@ -292,10 +318,31 @@ public enum NIOSSHAlgorithms {
         }
     }
 
+    /// Registers a preferred (highest priority) custom type tuple for Public Key Authentication.
+    /// Preferred algorithms are advertised before NIOSSH's built-in algorithms during negotiation.
+    public static func registerPreferred<
+        PublicKey: NIOSSHPublicKeyProtocol,
+        Signature: NIOSSHSignatureProtocol
+    >(
+        publicKey type: PublicKey.Type,
+        signature: Signature.Type
+    ) {
+        _CustomAlgorithms.preferredPublicKeyAlgorithmsLock.withLockVoid {
+            if !_CustomAlgorithms.preferredPublicKeyAlgorithms.contains(where: { ObjectIdentifier($0) == ObjectIdentifier(type) }) {
+                _CustomAlgorithms.preferredPublicKeyAlgorithms.append(type)
+                _CustomAlgorithms.preferredSignatures.append(signature)
+            }
+        }
+    }
+
     /// Used for our unit tests
     internal static func unregisterAlgorithms() {
         _CustomAlgorithms.transportProtectionSchemesLock.withLockVoid {
             _CustomAlgorithms.transportProtectionSchemes = []
+        }
+        _CustomAlgorithms.preferredPublicKeyAlgorithmsLock.withLockVoid {
+            _CustomAlgorithms.preferredPublicKeyAlgorithms = []
+            _CustomAlgorithms.preferredSignatures = []
         }
         _CustomAlgorithms.publicKeyAlgorithmsLock.withLockVoid {
             _CustomAlgorithms.publicKeyAlgorithms = []
@@ -326,6 +373,9 @@ private enum _CustomAlgorithms {
     static var transportProtectionSchemes = [NIOSSHTransportProtection.Type]()
     static var keyExchangeAlgorithmsLock = NIOLock()
     static var keyExchangeAlgorithms = [NIOSSHKeyExchangeAlgorithmProtocol.Type]()
+    static var preferredPublicKeyAlgorithmsLock = NIOLock()
+    static var preferredPublicKeyAlgorithms: [NIOSSHPublicKeyProtocol.Type] = []
+    static var preferredSignatures: [NIOSSHSignatureProtocol.Type] = []
     static var publicKeyAlgorithmsLock = NIOLock()
     static var publicKeyAlgorithms: [NIOSSHPublicKeyProtocol.Type] = []
     static var signaturesLock = NIOLock()
@@ -492,7 +542,7 @@ extension ByteBuffer {
             } else if keyIdentifierBytes.elementsEqual(NIOSSHPublicKey.ecdsaP521PublicKeyPrefix) {
                 return try buffer.readECDSAP521PublicKey()
             } else {
-                for type in NIOSSHPublicKey.customPublicKeyAlgorithms {
+                for type in NIOSSHPublicKey.allCustomPublicKeyAlgorithms {
                     if keyIdentifierBytes.elementsEqual(type.publicKeyPrefix.utf8) {
                         let publicKey = try type.read(from: &buffer)
                         return NIOSSHPublicKey(backingKey: .custom(publicKey))
