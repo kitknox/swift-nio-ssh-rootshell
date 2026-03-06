@@ -619,6 +619,28 @@ extension SSHKeyExchangeStateMachine {
             return negotiated.negotiatedHostKeyAlgorithm
         }
     }
+
+    var negotiatedAlgorithmInfo: (keyExchange: String, hostKey: String, cipher: String, mac: String?)? {
+        switch self.state {
+        case .idle, .keyExchangeSent, .complete:
+            return nil
+
+        case .keyExchangeReceived(_, negotiated: let negotiated, _),
+             .awaitingKeyExchangeInitInvalidGuess(_, negotiated: let negotiated),
+             .awaitingKeyExchangeInit(_, negotiated: let negotiated),
+             .keyExchangeInitReceived(_, negotiated: let negotiated),
+             .keyExchangeInitSent(_, negotiated: let negotiated),
+             .keysExchanged(_, _, negotiated: let negotiated),
+             .newKeysReceived(_, _, negotiated: let negotiated),
+             .newKeysSent(_, _, negotiated: let negotiated):
+            return (
+                keyExchange: String(negotiated.negotiatedKeyExchangeAlgorithm),
+                hostKey: String(negotiated.negotiatedHostKeyAlgorithm),
+                cipher: negotiated.negotiatedProtection.cipherName,
+                mac: negotiated.negotiatedMacAlgorithm.map { String($0) }
+            )
+        }
+    }
 }
 
 private extension CSPRNG {

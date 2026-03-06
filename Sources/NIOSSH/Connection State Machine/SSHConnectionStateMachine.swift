@@ -59,6 +59,10 @@ struct SSHConnectionStateMachine {
 
     class Attributes {
         var username: String? = nil
+        var negotiatedKeyExchangeAlgorithm: String? = nil
+        var negotiatedHostKeyAlgorithm: String? = nil
+        var negotiatedCipherAlgorithm: String? = nil
+        var negotiatedMacAlgorithm: String? = nil
     }
     
     /// The state of this state machine.
@@ -68,6 +72,24 @@ struct SSHConnectionStateMachine {
     private let attributes: Attributes
     
     var username: String? { attributes.username }
+
+    var negotiatedAlgorithms: (keyExchange: String, hostKey: String, cipher: String, mac: String?)? {
+        guard let kex = attributes.negotiatedKeyExchangeAlgorithm,
+              let hk = attributes.negotiatedHostKeyAlgorithm,
+              let cipher = attributes.negotiatedCipherAlgorithm else {
+            return nil
+        }
+        return (keyExchange: kex, hostKey: hk, cipher: cipher, mac: attributes.negotiatedMacAlgorithm)
+    }
+
+    private func captureNegotiatedAlgorithms(from keyExchangeStateMachine: SSHKeyExchangeStateMachine) {
+        if let info = keyExchangeStateMachine.negotiatedAlgorithmInfo {
+            attributes.negotiatedKeyExchangeAlgorithm = info.keyExchange
+            attributes.negotiatedHostKeyAlgorithm = info.hostKey
+            attributes.negotiatedCipherAlgorithm = info.cipher
+            attributes.negotiatedMacAlgorithm = info.mac
+        }
+    }
 
     static let bundledTransportProtectionSchemes: [NIOSSHTransportProtection.Type] = [
         AES256GCMOpenSSHTransportProtection.self, AES128GCMOpenSSHTransportProtection.self,
@@ -233,6 +255,7 @@ struct SSHConnectionStateMachine {
                 self.state = .sentNewKeys(state)
                 return result
             case .newKeys:
+                self.captureNegotiatedAlgorithms(from: state.keyExchangeStateMachine)
                 try state.receiveNewKeysMessage()
                 self.state = .userAuthentication(.init(sentNewKeysState: state))
                 return .noMessage
@@ -664,6 +687,7 @@ struct SSHConnectionStateMachine {
                 self.state = .rekeyingSentNewKeysState(state)
                 return result
             case .newKeys:
+                self.captureNegotiatedAlgorithms(from: state.keyExchangeStateMachine)
                 try state.receiveNewKeysMessage()
                 let newState = ActiveState(state)
                 self.state = .active(newState)
@@ -743,6 +767,7 @@ struct SSHConnectionStateMachine {
                 try kex.writeKeyExchangeReplyMessage(kexReply, into: &buffer)
                 self.state = .keyExchange(kex)
             case .newKeys:
+                self.captureNegotiatedAlgorithms(from: kex.keyExchangeStateMachine)
                 try kex.writeNewKeysMessage(into: &buffer)
                 let newState = SentNewKeysState(keyExchangeState: kex, loop: loop)
                 let possibleMessage = newState.userAuthStateMachine.beginAuthentication()
@@ -777,6 +802,7 @@ struct SSHConnectionStateMachine {
                 try kex.writeKeyExchangeReplyMessage(kexReply, into: &buffer)
                 self.state = .receivedNewKeys(kex)
             case .newKeys:
+                self.captureNegotiatedAlgorithms(from: kex.keyExchangeStateMachine)
                 try kex.writeNewKeysMessage(into: &buffer)
 
                 let newState = UserAuthenticationState(receivedNewKeysState: kex)
@@ -956,6 +982,7 @@ struct SSHConnectionStateMachine {
                 try state.writeKeyExchangeReplyMessage(kexReply, into: &buffer)
                 self.state = .rekeying(state)
             case .newKeys:
+                self.captureNegotiatedAlgorithms(from: state.keyExchangeStateMachine)
                 try state.writeNewKeysMessage(into: &buffer)
                 self.state = .rekeyingSentNewKeysState(.init(state))
 
@@ -984,6 +1011,7 @@ struct SSHConnectionStateMachine {
                 try state.writeKeyExchangeReplyMessage(kexReply, into: &buffer)
                 self.state = .rekeyingReceivedNewKeysState(state)
             case .newKeys:
+                self.captureNegotiatedAlgorithms(from: state.keyExchangeStateMachine)
                 try state.writeNewKeysMessage(into: &buffer)
                 self.state = .active(.init(state))
 

@@ -59,6 +59,11 @@ public final class NIOSSHHandler {
 
     // The authenticated username, if there was one.
     public var username: String? { stateMachine.username }
+
+    /// The negotiated SSH algorithms for this connection, if key exchange has completed.
+    public var negotiatedAlgorithms: (keyExchange: String, hostKey: String, cipher: String, mac: String?)? {
+        stateMachine.negotiatedAlgorithms
+    }
     
     /// Construct a new ``NIOSSHHandler``.
     ///
