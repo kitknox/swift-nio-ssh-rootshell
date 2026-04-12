@@ -193,7 +193,14 @@ struct SSHPacketParser {
 
         // This force unwrap is safe because we must have a block size, and a block size is always going to be more than 4 bytes.
         let packetLength = self.buffer.getInteger(at: self.buffer.readerIndex, as: UInt32.self)!
-        let decryptedLength = packetLength + UInt32(protection.macBytes)
+        // Use checked arithmetic to avoid a trap on overflow. A malicious peer can
+        // send a length field near UInt32.max which, when added to macBytes, would
+        // overflow and crash the process. On overflow, return UInt32.max so the
+        // caller's length check (after the state transition) rejects the packet.
+        let (decryptedLength, overflow) = packetLength.addingReportingOverflow(UInt32(protection.macBytes))
+        if overflow {
+            return UInt32.max
+        }
 
         // Length check moved to nextPacket() — see comment there.
         // Must NOT throw here because decryptFirstBlock already modified the
