@@ -101,6 +101,11 @@ extension AcceptsUserAuthMessages {
         return .event(NIOUserAuthBannerEvent(message: message.message, languageTag: message.languageTag))
     }
 
+    mutating func receiveUserAuthPKOK(_ message: SSHMessage.UserAuthPKOKMessage) throws -> SSHConnectionStateMachine.StateMachineInboundProcessResult {
+        let request = try self.userAuthStateMachine.receiveUserAuthPKOK(message)
+        return .emitMessage(SSHMultiMessage(.userAuthRequest(request)))
+    }
+
     private static func transform(_ result: NIOSSHUserAuthenticationResponseMessage, connectionAttributes: SSHConnectionStateMachine.Attributes?, username: String, banner: SSHServerConfiguration.UserAuthBanner? = nil) -> SSHMultiMessage {
         switch result {
         case .success:

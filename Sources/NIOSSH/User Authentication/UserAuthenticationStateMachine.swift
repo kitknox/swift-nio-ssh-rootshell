@@ -20,6 +20,7 @@ struct UserAuthenticationStateMachine {
     private let loop: EventLoop
     private var sessionID: ByteBuffer
     private let role: SSHConnectionRole
+    private var pendingPublicKeyProbe: PendingPublicKeyProbe?
 
     // TODO: The server SHOULD limit the number of authentication attempts the client may make.
     init(role: SSHConnectionRole, loop: EventLoop, sessionID: ByteBuffer) {
@@ -49,6 +50,13 @@ private extension UserAuthenticationStateMachine {
 
 private extension UserAuthenticationStateMachine {
     static let protocolName = "userauth"
+
+    struct PendingPublicKeyProbe {
+        var username: String
+        var service: String
+        var publicKey: NIOSSHPublicKey
+        var privateKey: NIOSSHPrivateKey
+    }
 }
 
 // MARK: Receiving Messages
@@ -172,6 +180,7 @@ extension UserAuthenticationStateMachine {
         case (.client(let delegate), .awaitingResponses(let responseCount)):
             // Ok, the server didn't like that much. Let's try another one.
             self.state = .awaitingNextRequest
+            self.pendingPublicKeyProbe = nil
             precondition(responseCount == 1, "We don't support parallel authentication attempts yet!")
             return self.requestNextAuthRequest(methods: .init(message), delegate: delegate)
         case (.client, .authenticationSucceeded):
@@ -200,6 +209,56 @@ extension UserAuthenticationStateMachine {
         default:
             // In all other instances, receiving user auth banner is legal and must be dealt with by client
             return
+        }
+    }
+
+    mutating func receiveUserAuthPKOK(_ message: SSHMessage.UserAuthPKOKMessage) throws -> SSHMessage.UserAuthRequestMessage {
+        switch (self.delegate, self.state) {
+        case (.client, .awaitingResponses(let responseCount)):
+            precondition(responseCount == 1, "We don't support parallel authentication attempts yet!")
+            guard let pending = self.pendingPublicKeyProbe else {
+                throw NIOSSHError.protocolViolation(
+                    protocolName: Self.protocolName,
+                    violation: "server sent public key OK without an outstanding public key probe"
+                )
+            }
+            guard pending.publicKey == message.key else {
+                self.pendingPublicKeyProbe = nil
+                throw NIOSSHError.protocolViolation(
+                    protocolName: Self.protocolName,
+                    violation: "server accepted a different public key than the one offered"
+                )
+            }
+
+            let dataToSign = UserAuthSignablePayload(
+                sessionIdentifier: self.sessionID,
+                userName: pending.username,
+                serviceName: pending.service,
+                publicKey: pending.publicKey
+            )
+            let signature = try pending.privateKey.sign(dataToSign)
+            self.pendingPublicKeyProbe = nil
+            self.state = .awaitingNextRequest
+            return SSHMessage.UserAuthRequestMessage(
+                username: pending.username,
+                service: pending.service,
+                method: .publicKey(.known(key: pending.publicKey, signature: signature))
+            )
+        case (.client, .authenticationSucceeded):
+            throw NIOSSHError.protocolViolation(
+                protocolName: Self.protocolName,
+                violation: "server sent public key OK after authentication succeeded"
+            )
+        case (.client, .idle), (.client, .awaitingServiceAcceptance), (.client, .awaitingNextRequest), (.client, .authenticationFailed):
+            throw NIOSSHError.protocolViolation(
+                protocolName: Self.protocolName,
+                violation: "server sent public key OK at the wrong time"
+            )
+        case (.server, _):
+            throw NIOSSHError.protocolViolation(
+                protocolName: Self.protocolName,
+                violation: "client sent public key OK"
+            )
         }
     }
 }
@@ -241,9 +300,20 @@ extension UserAuthenticationStateMachine {
         }
     }
 
-    mutating func sendUserAuthRequest(_: SSHMessage.UserAuthRequestMessage) {
+    mutating func sendUserAuthRequest(_ message: SSHMessage.UserAuthRequestMessage) {
         switch (self.delegate, self.state) {
         case (.client, .awaitingNextRequest):
+            if case .publicKey(.known(let key, signature: nil)) = message.method,
+               let signingPrivateKey = message.signingPrivateKey {
+                self.pendingPublicKeyProbe = PendingPublicKeyProbe(
+                    username: message.username,
+                    service: message.service,
+                    publicKey: key,
+                    privateKey: signingPrivateKey
+                )
+            } else {
+                self.pendingPublicKeyProbe = nil
+            }
             self.state = .awaitingResponses(1)
         case (.client, .idle),
              (.client, .awaitingServiceAcceptance):

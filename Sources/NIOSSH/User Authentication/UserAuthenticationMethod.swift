@@ -168,19 +168,34 @@ public extension NIOSSHUserAuthenticationOffer {
 
 public extension NIOSSHUserAuthenticationOffer.Offer {
     struct PrivateKey {
+        public enum AuthenticationMode {
+            case signedRequest
+            case probeThenSign
+        }
+
         public var privateKey: NIOSSHPrivateKey
         public var publicKey: NIOSSHPublicKey
+        public var authenticationMode: AuthenticationMode
 
-        public init(privateKey: NIOSSHPrivateKey) {
+        public init(
+            privateKey: NIOSSHPrivateKey,
+            authenticationMode: AuthenticationMode = .signedRequest
+        ) {
             self.privateKey = privateKey
             self.publicKey = privateKey.publicKey
+            self.authenticationMode = authenticationMode
         }
 
         /// Creates a private key offer with a certified public key.
         /// Certificate authentication uses the publicKey authentication method.
-        public init(privateKey: NIOSSHPrivateKey, certifiedKey: NIOSSHCertifiedPublicKey) {
+        public init(
+            privateKey: NIOSSHPrivateKey,
+            certifiedKey: NIOSSHCertifiedPublicKey,
+            authenticationMode: AuthenticationMode = .signedRequest
+        ) {
             self.privateKey = privateKey
             self.publicKey = NIOSSHPublicKey(certifiedKey)
+            self.authenticationMode = authenticationMode
         }
     }
 
@@ -207,14 +222,20 @@ extension SSHMessage.UserAuthRequestMessage {
 
         switch request.offer {
         case .privateKey(let privateKeyRequest):
-            let dataToSign = UserAuthSignablePayload(
-                sessionIdentifier: sessionID,
-                userName: self.username,
-                serviceName: self.service,
-                publicKey: privateKeyRequest.publicKey
-            )
-            let signature = try privateKeyRequest.privateKey.sign(dataToSign)
-            self.method = .publicKey(.known(key: privateKeyRequest.publicKey, signature: signature))
+            switch privateKeyRequest.authenticationMode {
+            case .signedRequest:
+                let dataToSign = UserAuthSignablePayload(
+                    sessionIdentifier: sessionID,
+                    userName: self.username,
+                    serviceName: self.service,
+                    publicKey: privateKeyRequest.publicKey
+                )
+                let signature = try privateKeyRequest.privateKey.sign(dataToSign)
+                self.method = .publicKey(.known(key: privateKeyRequest.publicKey, signature: signature))
+            case .probeThenSign:
+                self.method = .publicKey(.known(key: privateKeyRequest.publicKey, signature: nil))
+                self.signingPrivateKey = privateKeyRequest.privateKey
+            }
         case .password(let passwordRequest):
             self.method = .password(passwordRequest.password)
         case .hostBased:

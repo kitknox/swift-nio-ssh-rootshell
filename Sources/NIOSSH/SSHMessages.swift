@@ -156,6 +156,13 @@ extension SSHMessage {
         var username: String
         var service: String
         var method: Method
+        var signingPrivateKey: NIOSSHPrivateKey? = nil
+
+        static func == (lhs: UserAuthRequestMessage, rhs: UserAuthRequestMessage) -> Bool {
+            lhs.username == rhs.username &&
+                lhs.service == rhs.service &&
+                lhs.method == rhs.method
+        }
     }
 
     struct UserAuthFailureMessage: Equatable {
@@ -693,7 +700,7 @@ extension ByteBuffer {
                         return nil
                     }
 
-                    guard algorithmName.readableBytesView.elementsEqual(publicKey.keyPrefix) else {
+                    guard publicKey.isValidAuthenticationAlgorithmName(algorithmName.readableBytesView) else {
                         throw NIOSSHError.invalidSSHMessage(reason: "algorithm and key mismatch in user auth request")
                     }
 
@@ -767,7 +774,7 @@ extension ByteBuffer {
             }
 
             // Validate consistency here.
-            guard publicKeyType.readableBytesView.elementsEqual(publicKey.keyPrefix) else {
+            guard publicKey.isValidAuthenticationAlgorithmName(publicKeyType.readableBytesView) else {
                 throw NIOSSHError.invalidSSHMessage(reason: "inconsistent key type")
             }
 

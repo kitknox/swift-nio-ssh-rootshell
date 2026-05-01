@@ -221,6 +221,10 @@ extension NIOSSHPublicKey {
         }
     }
 
+    func isValidAuthenticationAlgorithmName<Bytes: Collection>(_ algorithmName: Bytes) -> Bool where Bytes.Element == UInt8 {
+        algorithmName.elementsEqual(self.keyPrefix) || algorithmName.elementsEqual(self.authAlgorithmName)
+    }
+
     private static let bundledAlgorithms: [String.UTF8View] = [
         Self.ed25519PublicKeyPrefix, Self.ecdsaP384PublicKeyPrefix, Self.ecdsaP256PublicKeyPrefix, Self.ecdsaP521PublicKeyPrefix,
     ]
