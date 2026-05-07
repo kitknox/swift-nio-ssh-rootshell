@@ -55,6 +55,27 @@ struct SSHConnectionStateMachine {
         case receivedDisconnect(SSHConnectionRole)
 
         case sentDisconnect(SSHConnectionRole)
+
+        /// Short stable name for this state, used in NIOSSHTrace lines.
+        /// Cheap (returns string literal) so safe to compute at every trace site.
+        var traceName: String {
+            switch self {
+            case .idle: return "idle"
+            case .sentVersion: return "sentVersion"
+            case .keyExchange: return "keyExchange"
+            case .sentNewKeys: return "sentNewKeys"
+            case .receivedNewKeys: return "receivedNewKeys"
+            case .userAuthentication: return "userAuth"
+            case .active: return "active"
+            case .receivedKexInitWhenActive: return "rxKexInitActive"
+            case .sentKexInitWhenActive: return "txKexInitActive"
+            case .rekeying: return "rekey"
+            case .rekeyingSentNewKeysState: return "rekey.sentNewKeys"
+            case .rekeyingReceivedNewKeysState: return "rekey.receivedNewKeys"
+            case .receivedDisconnect: return "rxDisconnect"
+            case .sentDisconnect: return "txDisconnect"
+            }
+        }
     }
 
     class Attributes {
@@ -66,7 +87,15 @@ struct SSHConnectionStateMachine {
     }
     
     /// The state of this state machine.
-    private var state: State
+    /// `didSet` emits a single transport-state-transition trace per
+    /// assignment via `NIOSSHTrace.stateTransition`. The trace helper
+    /// short-circuits on a lock-free flag when no event handler is wired,
+    /// so this is essentially free in the production default.
+    private var state: State {
+        didSet {
+            NIOSSHTrace.stateTransition(from: oldValue.traceName, to: state.traceName)
+        }
+    }
     
     /// Attributes of the connection which can be changed by messages handlers
     private let attributes: Attributes
@@ -164,6 +193,7 @@ struct SSHConnectionStateMachine {
             guard let message = try state.parser.nextPacket() else {
                 return nil
             }
+            NIOSSHTrace.inbound(message, state: self.state.traceName)
 
             switch message {
             case .version(let version):
@@ -188,6 +218,7 @@ struct SSHConnectionStateMachine {
                 self.state = .keyExchange(state)
                 return nil
             }
+            NIOSSHTrace.inbound(message, state: self.state.traceName)
 
             switch message {
             case .keyExchange(let message):
@@ -240,6 +271,7 @@ struct SSHConnectionStateMachine {
                 self.state = .sentNewKeys(state)
                 return nil
             }
+            NIOSSHTrace.inbound(message, state: self.state.traceName)
 
             switch message {
             case .keyExchange(let message):
@@ -296,6 +328,7 @@ struct SSHConnectionStateMachine {
                 self.state = .receivedNewKeys(state)
                 return nil
             }
+            NIOSSHTrace.inbound(message, state: self.state.traceName)
 
             switch message {
             case .serviceRequest(let message):
@@ -328,6 +361,7 @@ struct SSHConnectionStateMachine {
                 self.state = .userAuthentication(state)
                 return nil
             }
+            NIOSSHTrace.inbound(message, state: self.state.traceName)
 
             switch message {
             case .serviceRequest(let message):
@@ -387,6 +421,7 @@ struct SSHConnectionStateMachine {
                 self.state = .active(state)
                 return nil
             }
+            NIOSSHTrace.inbound(message, state: self.state.traceName)
 
             switch message {
             case .channelOpen(let message):
@@ -453,6 +488,7 @@ struct SSHConnectionStateMachine {
                 self.state = .receivedKexInitWhenActive(state)
                 return nil
             }
+            NIOSSHTrace.inbound(message, state: self.state.traceName)
 
             switch message {
             case .keyExchange(let message):
@@ -498,6 +534,7 @@ struct SSHConnectionStateMachine {
                 self.state = .sentKexInitWhenActive(state)
                 return nil
             }
+            NIOSSHTrace.inbound(message, state: self.state.traceName)
 
             switch message {
             case .keyExchange(let message):
@@ -562,6 +599,7 @@ struct SSHConnectionStateMachine {
                 self.state = .rekeying(state)
                 return nil
             }
+            NIOSSHTrace.inbound(message, state: self.state.traceName)
 
             switch message {
             case .keyExchange(let message):
@@ -616,6 +654,7 @@ struct SSHConnectionStateMachine {
                 self.state = .rekeyingReceivedNewKeysState(state)
                 return nil
             }
+            NIOSSHTrace.inbound(message, state: self.state.traceName)
 
             switch message {
             // TODO(cory): One day soon we'll need to support re-keying in this state.
@@ -677,6 +716,7 @@ struct SSHConnectionStateMachine {
                 self.state = .rekeyingSentNewKeysState(state)
                 return nil
             }
+            NIOSSHTrace.inbound(message, state: self.state.traceName)
 
             switch message {
             case .keyExchange(let message):
@@ -738,6 +778,8 @@ struct SSHConnectionStateMachine {
                                          allocator: ByteBufferAllocator,
                                          loop: EventLoop) throws
     {
+        NIOSSHTrace.outbound(message, state: self.state.traceName)
+
         switch self.state {
         case .idle(var state):
             switch message {

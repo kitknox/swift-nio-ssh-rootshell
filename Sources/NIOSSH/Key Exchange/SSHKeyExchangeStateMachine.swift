@@ -127,7 +127,19 @@ struct SSHKeyExchangeStateMachine {
                 self.addKeyExchangeInitMessagesToExchangeBytes(clientsMessage: ourMessage, serversMessage: message)
 
                 // verify algorithms
-                let negotiated = try self.negotiatedAlgorithms(message)
+                let negotiated: NegotiationResult
+                do {
+                    negotiated = try self.negotiatedAlgorithms(message)
+                } catch {
+                    NIOSSHTrace.error("kex.negotiate", error)
+                    throw error
+                }
+                NIOSSHTrace.event(
+                    "KEX negotiated kex=\(negotiated.negotiatedKeyExchangeAlgorithm) " +
+                    "hostKey=\(negotiated.negotiatedHostKeyAlgorithm) " +
+                    "transport=\(negotiated.negotiatedProtection) " +
+                    "mac=\(negotiated.negotiatedMacAlgorithm.map { String($0) } ?? "implicit")"
+                )
                 let exchanger = try self.exchangerForAlgorithm(negotiated.negotiatedKeyExchangeAlgorithm)
 
                 // Ok, we need to send the key exchange message.
@@ -252,20 +264,31 @@ struct SSHKeyExchangeStateMachine {
             switch self.role {
             case .client:
                 guard message.hostKey.keyPrefix.elementsEqual(negotiated.negotiatedHostKeyAlgorithm.utf8) else {
+                    let expected = String(negotiated.negotiatedHostKeyAlgorithm)
+                    let got = String(decoding: message.hostKey.keyPrefix, as: UTF8.self)
+                    NIOSSHTrace.event("KEX host key alg mismatch expected=\(expected) got=\(got)")
                     throw NIOSSHError.invalidHostKeyForKeyExchange(expected: negotiated.negotiatedHostKeyAlgorithm,
                                                                    got: message.hostKey.keyPrefix)
                 }
+                NIOSSHTrace.event("KEX deriving shared secret + verifying server signature")
 
-                let result = try exchanger.receiveServerKeyExchangePayload(
-                    serverKeyExchangeMessage: .init(
-                        hostKey: message.hostKey,
-                        publicKey: message.publicKey,
-                        signature: message.signature
-                    ),
-                    initialExchangeBytes: &self.initialExchangeBytes,
-                    allocator: self.allocator,
-                    expectedKeySizes: negotiated.negotiatedProtection.keySizes(forMac: negotiated.negotiatedMacAlgorithm.map { String($0) })
-                )
+                let result: KeyExchangeResult
+                do {
+                    result = try exchanger.receiveServerKeyExchangePayload(
+                        serverKeyExchangeMessage: .init(
+                            hostKey: message.hostKey,
+                            publicKey: message.publicKey,
+                            signature: message.signature
+                        ),
+                        initialExchangeBytes: &self.initialExchangeBytes,
+                        allocator: self.allocator,
+                        expectedKeySizes: negotiated.negotiatedProtection.keySizes(forMac: negotiated.negotiatedMacAlgorithm.map { String($0) })
+                    )
+                } catch {
+                    NIOSSHTrace.error("kex.receiveServerKeyExchangePayload", error)
+                    throw error
+                }
+                NIOSSHTrace.event("KEX shared secret derived, server signature verified")
 
                 let protection = try negotiated.negotiatedProtection.init(initialKeys: result.keys, mac: negotiated.negotiatedMacAlgorithm.map { String($0) })
                 self.state = .keysExchanged(result: result, protection: protection, negotiated: negotiated)
@@ -274,7 +297,7 @@ struct SSHKeyExchangeStateMachine {
                 guard case .client(let clientConfig) = self.role else {
                     preconditionFailure("Should not be in .keyExchangeInitSent as server")
                 }
-                
+
                 // Check if this is a certificate and validate it if we have trusted CAs
                 if let certifiedKey = NIOSSHCertifiedPublicKey(message.hostKey),
                    !clientConfig.trustedHostCAKeys.isEmpty {
@@ -289,24 +312,41 @@ struct SSHKeyExchangeStateMachine {
                             acceptableCriticalOptions: [] // Host certificates typically don't have critical options
                         )
                         // Certificate is valid, now let the delegate do additional validation
+                        NIOSSHTrace.event("KEX awaiting host certificate approval from delegate")
                         let promise = self.loop.makePromise(of: Void.self)
                         clientConfig.serverAuthDelegate.validateHostCertificate(
                             hostKey: message.hostKey,
                             certifiedKey: certifiedKey,
                             validationCompletePromise: promise
                         )
-                        return promise.futureResult.map {
+                        return promise.futureResult.always { result in
+                            switch result {
+                            case .success:
+                                NIOSSHTrace.event("KEX host certificate approved → emitting NEWKEYS")
+                            case .failure(let err):
+                                NIOSSHTrace.error("kex.hostCertApproval", err)
+                            }
+                        }.map {
                             SSHMultiMessage(SSHMessage.newKeys)
                         }
                     } catch {
                         // Certificate validation failed
+                        NIOSSHTrace.error("kex.hostCertValidate", error)
                         return self.loop.makeFailedFuture(error)
                     }
                 } else {
                     // Regular key validation or no trusted CAs configured
+                    NIOSSHTrace.event("KEX awaiting host key approval from delegate (validateHostKey)")
                     let promise = self.loop.makePromise(of: Void.self)
                     clientConfig.serverAuthDelegate.validateHostKey(hostKey: message.hostKey, validationCompletePromise: promise)
-                    return promise.futureResult.map {
+                    return promise.futureResult.always { result in
+                        switch result {
+                        case .success:
+                            NIOSSHTrace.event("KEX host key approved → emitting NEWKEYS")
+                        case .failure(let err):
+                            NIOSSHTrace.error("kex.hostKeyApproval", err)
+                        }
+                    }.map {
                         SSHMultiMessage(SSHMessage.newKeys)
                     }
                 }
