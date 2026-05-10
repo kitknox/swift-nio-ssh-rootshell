@@ -74,8 +74,15 @@ struct SSHKeyExchangeStateMachine {
     private var transportProtectionSchemes: [NIOSSHTransportProtection.Type]
     private var keyExchangeAlgorithms: [NIOSSHKeyExchangeAlgorithmProtocol.Type]
     private var previousSessionIdentifier: ByteBuffer?
+    private let remoteVersion: String
+    private static let routerOSVersionPrefix = "SSH-2.0-ROSSSH"
+    private static let routerOSKeyExchangeAlgorithms: Set<Substring> = [
+        Substring("curve25519-sha256"),
+        Substring("curve25519-sha256@libssh.org"),
+    ]
 
-    init(allocator: ByteBufferAllocator, loop: EventLoop, role: SSHConnectionRole, remoteVersion: String, keyExchangeAlgorithms: [NIOSSHKeyExchangeAlgorithmProtocol.Type], transportProtectionSchemes: [NIOSSHTransportProtection.Type], previousSessionIdentifier: ByteBuffer?) {
+    /// - Parameter localVersion: Defaults to `Constants.version`; tests may override this to model a peer with a different banner in exchange hash construction.
+    init(allocator: ByteBufferAllocator, loop: EventLoop, role: SSHConnectionRole, remoteVersion: String, keyExchangeAlgorithms: [NIOSSHKeyExchangeAlgorithmProtocol.Type], transportProtectionSchemes: [NIOSSHTransportProtection.Type], previousSessionIdentifier: ByteBuffer?, localVersion: String = Constants.version) {
         self.allocator = allocator
         self.loop = loop
         self.role = role
@@ -84,14 +91,15 @@ struct SSHKeyExchangeStateMachine {
         self.keyExchangeAlgorithms = keyExchangeAlgorithms
         self.transportProtectionSchemes = transportProtectionSchemes
         self.previousSessionIdentifier = previousSessionIdentifier
+        self.remoteVersion = remoteVersion
 
         switch self.role {
         case .client:
-            self.initialExchangeBytes.writeSSHString(Constants.version.utf8)
+            self.initialExchangeBytes.writeSSHString(localVersion.utf8)
             self.initialExchangeBytes.writeSSHString(remoteVersion.utf8)
         case .server:
             self.initialExchangeBytes.writeSSHString(remoteVersion.utf8)
-            self.initialExchangeBytes.writeSSHString(Constants.version.utf8)
+            self.initialExchangeBytes.writeSSHString(localVersion.utf8)
         }
     }
 
@@ -105,7 +113,7 @@ struct SSHKeyExchangeStateMachine {
 
         return .init(
             cookie: rng.randomCookie(allocator: self.allocator),
-            keyExchangeAlgorithms: self.role.keyExchangeAlgorithmNames,
+            keyExchangeAlgorithms: self.keyExchangeAlgorithmProposal,
             serverHostKeyAlgorithms: self.supportedHostKeyAlgorithms,
             encryptionAlgorithmsClientToServer: encryptionAlgorithms,
             encryptionAlgorithmsServerToClient: encryptionAlgorithms,
@@ -117,6 +125,28 @@ struct SSHKeyExchangeStateMachine {
             languagesServerToClient: [],
             firstKexPacketFollows: false
         )
+    }
+
+    private var keyExchangeAlgorithmProposal: [Substring] {
+        // RouterOS ROSSSH can stop responding when the client KEXINIT offers too many KEX algorithms.
+        guard self.role.isClient, self.isRouterOSPeer else {
+            return self.role.keyExchangeAlgorithmNames
+        }
+
+        let routerOSAlgorithms = self.role.keyExchangeAlgorithmNames.filter {
+            Self.routerOSKeyExchangeAlgorithms.contains($0)
+        }
+        if !routerOSAlgorithms.isEmpty {
+            NIOSSHTrace.event("KEX using RouterOS compact proposal for remoteVersion=\(self.remoteVersion)")
+            return routerOSAlgorithms
+        }
+
+        NIOSSHTrace.event("KEX RouterOS compact proposal unavailable; Curve25519 algorithms are not configured")
+        return self.role.keyExchangeAlgorithmNames
+    }
+
+    private var isRouterOSPeer: Bool {
+        self.remoteVersion == Self.routerOSVersionPrefix || self.remoteVersion.hasPrefix(Self.routerOSVersionPrefix + " ")
     }
 
     mutating func handle(keyExchange message: SSHMessage.KeyExchangeMessage) throws -> SSHMultiMessage? {
@@ -451,7 +481,7 @@ struct SSHKeyExchangeStateMachine {
 
         switch self.role {
         case .client:
-            clientAlgorithms = self.role.keyExchangeAlgorithmNames
+            clientAlgorithms = self.keyExchangeAlgorithmProposal
             serverAlgorithms = peerKeyExchangeAlgorithms
             clientHostKeyAlgorithms = self.supportedHostKeyAlgorithms
             serverHostKeyAlgorithms = peerHostKeyAlgorithms
@@ -543,7 +573,7 @@ struct SSHKeyExchangeStateMachine {
     private func expectingIncorrectGuess(_ kexMessage: SSHMessage.KeyExchangeMessage) -> Bool {
         // A guess is wrong if the key exchange algorithm and/or the host key algorithm differ from our preference.
         kexMessage.firstKexPacketFollows && (
-            kexMessage.keyExchangeAlgorithms.first != self.role.keyExchangeAlgorithmNames.first ||
+            kexMessage.keyExchangeAlgorithms.first != self.keyExchangeAlgorithmProposal.first ||
                 kexMessage.serverHostKeyAlgorithms.first != self.supportedHostKeyAlgorithms.first
         )
     }

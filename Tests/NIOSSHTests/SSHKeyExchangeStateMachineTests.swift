@@ -132,6 +132,41 @@ final class SSHKeyExchangeStateMachineTests: XCTestCase {
         }
     }
 
+    func testClientKeyExchangeProposalUnchangedForNonRouterOSServers() throws {
+        let allocator = ByteBufferAllocator()
+        let loop = EmbeddedEventLoop()
+        let clientConfig = SSHClientConfiguration(userAuthDelegate: ExplodingAuthDelegate(), serverAuthDelegate: AcceptAllHostKeysDelegate())
+        let client = SSHKeyExchangeStateMachine(
+            allocator: allocator,
+            loop: loop,
+            role: .client(clientConfig),
+            remoteVersion: "SSH-2.0-OpenSSH_8.5",
+            keyExchangeAlgorithms: SSHKeyExchangeStateMachine.bundledKeyExchangeImplementations,
+            transportProtectionSchemes: [AES256GCMOpenSSHTransportProtection.self],
+            previousSessionIdentifier: nil
+        )
+
+        let message = client.createKeyExchangeMessage()
+        XCTAssertEqual(message.keyExchangeAlgorithms, SSHConnectionRole.client(clientConfig).keyExchangeAlgorithmNames)
+    }
+
+    func testRouterOSClientKeyExchangeProposalIsCompact() throws {
+        let allocator = ByteBufferAllocator()
+        let loop = EmbeddedEventLoop()
+        let client = SSHKeyExchangeStateMachine(
+            allocator: allocator,
+            loop: loop,
+            role: .client(.init(userAuthDelegate: ExplodingAuthDelegate(), serverAuthDelegate: AcceptAllHostKeysDelegate())),
+            remoteVersion: "SSH-2.0-ROSSSH",
+            keyExchangeAlgorithms: SSHKeyExchangeStateMachine.bundledKeyExchangeImplementations,
+            transportProtectionSchemes: [AES256GCMOpenSSHTransportProtection.self],
+            previousSessionIdentifier: nil
+        )
+
+        let message = client.createKeyExchangeMessage()
+        XCTAssertEqual(message.keyExchangeAlgorithms, ["curve25519-sha256", "curve25519-sha256@libssh.org"])
+    }
+
     private func assertUnexpectedMessage<T>(file: StaticString = #filePath, line: UInt = #line, _ messageFactory: () throws -> T) {
         XCTAssertThrowsError(try messageFactory(), file: file, line: line) { error in
             XCTAssertEqual(error as? SSHKeyExchangeStateMachine.SSHKeyExchangeError, SSHKeyExchangeStateMachine.SSHKeyExchangeError.unexpectedMessage, file: file, line: line)
@@ -309,6 +344,57 @@ final class SSHKeyExchangeStateMachineTests: XCTestCase {
         let serverInboundProtection = try assertNoThrowWithValue(server.handleNewKeys())
 
         // Each peer has generated the exact same protection object for both directions.
+        XCTAssertTrue(clientInboundProtection === clientOutboundProtection)
+        XCTAssertTrue(serverInboundProtection === serverOutboundProtection)
+
+        self.assertCompatibleProtection(client: clientInboundProtection, server: serverInboundProtection)
+    }
+
+    func testRouterOSKeyExchangeCompletesWithCompactProposal() throws {
+        let allocator = ByteBufferAllocator()
+        let loop = EmbeddedEventLoop()
+
+        var client = SSHKeyExchangeStateMachine(
+            allocator: allocator,
+            loop: loop,
+            role: .client(.init(userAuthDelegate: ExplodingAuthDelegate(), serverAuthDelegate: AcceptAllHostKeysDelegate())),
+            remoteVersion: "SSH-2.0-ROSSSH",
+            keyExchangeAlgorithms: SSHKeyExchangeStateMachine.bundledKeyExchangeImplementations,
+            transportProtectionSchemes: [AES256GCMOpenSSHTransportProtection.self],
+            previousSessionIdentifier: nil
+        )
+        var server = SSHKeyExchangeStateMachine(
+            allocator: allocator,
+            loop: loop,
+            role: .server(.init(hostKeys: [.init(ed25519Key: .init())], userAuthDelegate: DenyAllServerAuthDelegate())),
+            remoteVersion: Constants.version,
+            keyExchangeAlgorithms: SSHKeyExchangeStateMachine.bundledKeyExchangeImplementations,
+            transportProtectionSchemes: [AES256GCMOpenSSHTransportProtection.self],
+            previousSessionIdentifier: nil,
+            localVersion: "SSH-2.0-ROSSSH"
+        )
+
+        let serverMessage = server.createKeyExchangeMessage()
+        let clientMessage = client.createKeyExchangeMessage()
+        XCTAssertEqual(clientMessage.keyExchangeAlgorithms, ["curve25519-sha256", "curve25519-sha256@libssh.org"])
+
+        server.send(keyExchange: serverMessage)
+        client.send(keyExchange: clientMessage)
+
+        try self.assertGeneratesNoMessage(server.handle(keyExchange: clientMessage))
+        let ecdhInit = try assertGeneratesECDHKeyExchangeInit(client.handle(keyExchange: serverMessage))
+        client.send(keyExchangeInit: ecdhInit)
+
+        let ecdhReply = try assertGeneratesECDHKeyExchangeReplyAndNewKeys(server.handle(keyExchangeInit: ecdhInit))
+        XCTAssertNoThrow(try server.send(keyExchangeReply: ecdhReply))
+        let serverOutboundProtection = server.sendNewKeys()
+
+        try self.assertGeneratesNewKeysSynchronously(client.handle(keyExchangeReply: ecdhReply))
+        let clientOutboundProtection = client.sendNewKeys()
+
+        let clientInboundProtection = try assertNoThrowWithValue(client.handleNewKeys())
+        let serverInboundProtection = try assertNoThrowWithValue(server.handleNewKeys())
+
         XCTAssertTrue(clientInboundProtection === clientOutboundProtection)
         XCTAssertTrue(serverInboundProtection === serverOutboundProtection)
 
