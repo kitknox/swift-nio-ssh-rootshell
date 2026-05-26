@@ -57,6 +57,35 @@ public struct NIOSSHPrivateKey {
     }
     #endif
 
+    /// The underlying Ed25519 private key, if this is an Ed25519 key.
+    /// Exposed so callers that need to feed the raw scalar to non-SSH
+    /// crypto code (e.g. GPG agent forwarding's PKSIGN, which produces
+    /// the EdDSA signature directly rather than going through SSH wire
+    /// format) can do so without re-parsing the key text.
+    public var ed25519PrivateKey: Curve25519.Signing.PrivateKey? {
+        if case .ed25519(let k) = backingKey { return k }
+        return nil
+    }
+
+    /// The underlying P-256 ECDSA private key, if applicable. See
+    /// ``ed25519PrivateKey`` for the rationale.
+    public var p256PrivateKey: P256.Signing.PrivateKey? {
+        if case .ecdsaP256(let k) = backingKey { return k }
+        return nil
+    }
+
+    /// The underlying P-384 ECDSA private key, if applicable.
+    public var p384PrivateKey: P384.Signing.PrivateKey? {
+        if case .ecdsaP384(let k) = backingKey { return k }
+        return nil
+    }
+
+    /// The underlying P-521 ECDSA private key, if applicable.
+    public var p521PrivateKey: P521.Signing.PrivateKey? {
+        if case .ecdsaP521(let k) = backingKey { return k }
+        return nil
+    }
+
     // The algorithms that apply to this host key.
     internal var hostKeyAlgorithms: [Substring] {
         switch self.backingKey {

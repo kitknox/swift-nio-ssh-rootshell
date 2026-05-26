@@ -39,6 +39,13 @@ public enum SSHChannelType: Equatable, NIOSSHSendable {
     /// "Auth Agent" is an SSH agent forwarding channel (auth-agent@openssh.com).
     /// Used to forward SSH agent requests from the remote server back to the local agent.
     case authAgent
+
+    /// `forwarded-streamlocal@openssh.com` — a Unix-domain socket
+    /// connection accepted on the server, forwarded back to the client
+    /// over an SSH channel. Typically established by a prior
+    /// `streamlocal-forward@openssh.com` global request from the client.
+    /// The canonical use case is GPG agent forwarding.
+    case forwardedStreamLocal(ForwardedStreamLocal)
 }
 
 public extension SSHChannelType {
@@ -71,6 +78,19 @@ public extension SSHChannelType {
             self.targetHost = targetHost
             self._targetPort = targetPort
             self.originatorAddress = originatorAddress
+        }
+    }
+}
+
+public extension SSHChannelType {
+    struct ForwardedStreamLocal: Equatable, NIOSSHSendable {
+        /// Path of the remote-side Unix-domain socket that the peer
+        /// connected to. Matches the path previously bound by the
+        /// client's `streamlocal-forward@openssh.com` global request.
+        public var socketPath: String
+
+        public init(socketPath: String) {
+            self.socketPath = socketPath
         }
     }
 }
@@ -120,6 +140,8 @@ extension SSHChannelType {
             self = .forwardedTCPIP(.init(listeningHost: message.hostListening, listeningPort: message.portListening, originatorAddress: message.originatorAddress))
         case .authAgent:
             self = .authAgent
+        case .forwardedStreamLocal(let message):
+            self = .forwardedStreamLocal(.init(socketPath: message.socketPath))
         }
     }
 }
@@ -135,6 +157,8 @@ extension SSHMessage.ChannelOpenMessage.ChannelType {
             self = .forwardedTCPIP(.init(hostListening: data.listeningHost, portListening: data._listeningPort, originatorAddress: data.originatorAddress))
         case .authAgent:
             self = .authAgent
+        case .forwardedStreamLocal(let data):
+            self = .forwardedStreamLocal(.init(socketPath: data.socketPath))
         }
     }
 }
