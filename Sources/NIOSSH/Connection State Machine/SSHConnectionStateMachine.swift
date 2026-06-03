@@ -386,6 +386,10 @@ struct SSHConnectionStateMachine {
                 return result
 
             case .userAuthFailure(let message):
+                // The in-flight method failed; the next outbound request resets
+                // this, but reset now so any (illegal) byte-60 message before
+                // the next request is read as PK_OK, not INFO_REQUEST.
+                state.parser.userAuthByte60Mode = .publicKeyOK
                 let result = try state.receiveUserAuthFailure(message)
                 self.state = .userAuthentication(state)
                 return result
@@ -397,6 +401,11 @@ struct SSHConnectionStateMachine {
 
             case .userAuthPKOK(let message):
                 let result = try state.receiveUserAuthPKOK(message)
+                self.state = .userAuthentication(state)
+                return result
+
+            case .userAuthInfoRequest(let message):
+                let result = try state.receiveUserAuthInfoRequest(message)
                 self.state = .userAuthentication(state)
                 return result
 
@@ -912,6 +921,13 @@ struct SSHConnectionStateMachine {
                 self.state = .userAuthentication(state)
 
             case .userAuthRequest(let message):
+                // Tell the parser how to interpret byte 60 of the server's reply:
+                // INFO_REQUEST after a keyboard-interactive request, else PK_OK.
+                if case .keyboardInteractive = message.method {
+                    state.parser.userAuthByte60Mode = .keyboardInteractiveInfoRequest
+                } else {
+                    state.parser.userAuthByte60Mode = .publicKeyOK
+                }
                 try state.writeUserAuthRequest(message, into: &buffer)
                 self.state = .userAuthentication(state)
 
@@ -926,6 +942,10 @@ struct SSHConnectionStateMachine {
 
             case .userAuthPKOK(let message):
                 try state.writeUserAuthPKOK(message, into: &buffer)
+                self.state = .userAuthentication(state)
+
+            case .userAuthInfoResponse(let message):
+                try state.writeUserAuthInfoResponse(message, into: &buffer)
                 self.state = .userAuthentication(state)
 
             case .disconnect:

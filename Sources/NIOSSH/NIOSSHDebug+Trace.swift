@@ -180,6 +180,8 @@ extension SSHMessage {
                 case .unknown:
                     methodStr = "publickey type=unknown"
                 }
+            case .keyboardInteractive:
+                methodStr = "keyboard-interactive"
             }
             return "USERAUTH_REQUEST user=\(m.username) service=\(m.service) method=\(methodStr)"
 
@@ -194,6 +196,13 @@ extension SSHMessage {
 
         case .userAuthPKOK(let m):
             return "USERAUTH_PK_OK type=\(m.key.keyPrefixString)"
+
+        case .userAuthInfoRequest(let m):
+            return "USERAUTH_INFO_REQUEST name=\"\(NIOSSHTrace.truncate(m.name))\" prompts=\(m.prompts.count)"
+
+        case .userAuthInfoResponse(let m):
+            // Never log response values — they carry passwords/OTP codes.
+            return "USERAUTH_INFO_RESPONSE responses=\(m.responses.count)"
 
         case .globalRequest(let m):
             let typeStr: String

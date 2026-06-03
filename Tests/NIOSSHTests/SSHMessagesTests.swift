@@ -723,4 +723,83 @@ final class SSHMessagesTests: XCTestCase {
 
         try self.assertCorrectlyManagesPartialRead(message)
     }
+
+    // MARK: - Keyboard-interactive (RFC 4256)
+
+    func testUserAuthRequestKeyboardInteractiveRoundTrips() throws {
+        var buffer = ByteBufferAllocator().buffer(capacity: 128)
+        let message = SSHMessage.userAuthRequest(.init(
+            username: "alice",
+            service: "ssh-connection",
+            method: .keyboardInteractive(.init(languageTag: "", submethods: ""))
+        ))
+
+        buffer.writeSSHMessage(message)
+        XCTAssertEqual(try buffer.readSSHMessage(), message)
+    }
+
+    func testUserAuthInfoRequestRoundTripsInKeyboardInteractiveMode() throws {
+        var buffer = ByteBufferAllocator().buffer(capacity: 256)
+        let message = SSHMessage.userAuthInfoRequest(.init(
+            name: "PAM authentication",
+            instruction: "Provide your credentials",
+            languageTag: "",
+            prompts: [
+                .init(prompt: "Password: ", echo: false),
+                .init(prompt: "Verification code: ", echo: true),
+            ]
+        ))
+
+        buffer.writeSSHMessage(message)
+        XCTAssertEqual(try buffer.readSSHMessage(byte60Mode: .keyboardInteractiveInfoRequest), message)
+    }
+
+    func testUserAuthInfoRequestWithZeroPromptsRoundTrips() throws {
+        var buffer = ByteBufferAllocator().buffer(capacity: 64)
+        // An information-only INFO_REQUEST: no prompts, still a valid round (RFC 4256).
+        let message = SSHMessage.userAuthInfoRequest(.init(
+            name: "",
+            instruction: "Welcome",
+            languageTag: "",
+            prompts: []
+        ))
+
+        buffer.writeSSHMessage(message)
+        XCTAssertEqual(try buffer.readSSHMessage(byte60Mode: .keyboardInteractiveInfoRequest), message)
+    }
+
+    func testByte60IsDisambiguatedByMode() throws {
+        var buffer = ByteBufferAllocator().buffer(capacity: 128)
+        let infoRequest = SSHMessage.userAuthInfoRequest(.init(
+            name: "PAM",
+            instruction: "",
+            languageTag: "",
+            prompts: [.init(prompt: "Password: ", echo: false)]
+        ))
+        buffer.writeSSHMessage(infoRequest)
+        let snapshot = buffer  // ByteBuffer is copy-on-write
+
+        // Default `.publicKeyOK` mode tries to parse byte 60 as USERAUTH_PK_OK,
+        // whose first field would have to be a known key algorithm — it is not.
+        var pkBuffer = snapshot
+        XCTAssertThrowsError(try pkBuffer.readSSHMessage())
+
+        // Keyboard-interactive mode decodes the very same bytes as INFO_REQUEST.
+        var kbdBuffer = snapshot
+        XCTAssertEqual(try kbdBuffer.readSSHMessage(byte60Mode: .keyboardInteractiveInfoRequest), infoRequest)
+    }
+
+    func testUserAuthInfoResponseSerializes() throws {
+        var buffer = ByteBufferAllocator().buffer(capacity: 64)
+        let responses = ["hunter2", "123456"]
+        buffer.writeSSHMessage(.userAuthInfoResponse(.init(responses: responses)))
+
+        XCTAssertEqual(buffer.readInteger(as: UInt8.self), SSHMessage.UserAuthInfoResponseMessage.id)
+        XCTAssertEqual(buffer.readInteger(as: UInt32.self), UInt32(responses.count))
+        for expected in responses {
+            let len = try XCTUnwrap(buffer.readInteger(as: UInt32.self))
+            XCTAssertEqual(buffer.readString(length: Int(len)), expected)
+        }
+        XCTAssertEqual(buffer.readableBytes, 0)
+    }
 }

@@ -182,6 +182,12 @@ extension UserAuthenticationStateMachine {
             self.state = .awaitingNextRequest
             self.pendingPublicKeyProbe = nil
             precondition(responseCount == 1, "We don't support parallel authentication attempts yet!")
+            // A partial success means a method was accepted but more are required;
+            // tell the delegate so it won't reuse the accepted credential (e.g. a
+            // password) to auto-answer a subsequent factor.
+            if message.partialSuccess {
+                delegate.authenticationSucceededPartially()
+            }
             return self.requestNextAuthRequest(methods: .init(message), delegate: delegate)
         case (.client, .authenticationSucceeded):
             // We should ignore all further auth messages in this state.
@@ -259,6 +265,38 @@ extension UserAuthenticationStateMachine {
                 protocolName: Self.protocolName,
                 violation: "client sent public key OK"
             )
+        }
+    }
+
+    /// We've received a keyboard-interactive INFO_REQUEST (RFC 4256). Ask the
+    /// delegate to answer the prompts and return a future INFO_RESPONSE message.
+    mutating func receiveUserAuthInfoRequest(_ message: SSHMessage.UserAuthInfoRequestMessage) throws -> EventLoopFuture<SSHMessage.UserAuthInfoResponseMessage>? {
+        switch (self.delegate, self.state) {
+        case (.client(let delegate), .awaitingResponses(let responseCount)):
+            precondition(responseCount == 1, "We don't support parallel authentication attempts yet!")
+            // Stay in .awaitingResponses(1): once we answer, the server may send
+            // another INFO_REQUEST, SUCCESS, or FAILURE. We do not touch
+            // pendingPublicKeyProbe — it is nil for keyboard-interactive.
+            let prompts = message.prompts.map {
+                NIOSSHKeyboardInteractivePrompt(prompt: $0.prompt, echo: $0.echo)
+            }
+            let promise = self.loop.makePromise(of: [String].self)
+            delegate.respondToKeyboardInteractiveChallenge(
+                name: message.name,
+                instruction: message.instruction,
+                prompts: prompts,
+                responsePromise: promise
+            )
+            return promise.futureResult.map { responses in
+                SSHMessage.UserAuthInfoResponseMessage(responses: responses)
+            }
+        case (.client, .authenticationSucceeded):
+            // Ignore stray messages after success.
+            return nil
+        case (.client, .idle), (.client, .awaitingServiceAcceptance), (.client, .awaitingNextRequest), (.client, .authenticationFailed):
+            throw NIOSSHError.protocolViolation(protocolName: Self.protocolName, violation: "server sent keyboard-interactive INFO_REQUEST at the wrong time")
+        case (.server, _):
+            throw NIOSSHError.protocolViolation(protocolName: Self.protocolName, violation: "client sent keyboard-interactive INFO_REQUEST")
         }
     }
 }
@@ -350,6 +388,24 @@ extension UserAuthenticationStateMachine {
             preconditionFailure("Servers can never enter authenticationFailed")
         case (.client, _):
             preconditionFailure("Clients never send auth responses")
+        }
+    }
+
+    /// We're about to send a keyboard-interactive INFO_RESPONSE. Remain in
+    /// `.awaitingResponses(1)`: the server replies with another INFO_REQUEST,
+    /// SUCCESS, or FAILURE.
+    mutating func sendUserAuthInfoResponse(_: SSHMessage.UserAuthInfoResponseMessage) {
+        switch (self.delegate, self.state) {
+        case (.client, .awaitingResponses(let responseCount)):
+            precondition(responseCount == 1, "We don't support parallel authentication attempts yet!")
+        case (.client, .idle), (.client, .awaitingServiceAcceptance), (.client, .awaitingNextRequest):
+            preconditionFailure("Sent INFO_RESPONSE without an outstanding INFO_REQUEST")
+        case (.client, .authenticationSucceeded):
+            preconditionFailure("Sent INFO_RESPONSE after authentication succeeded")
+        case (.client, .authenticationFailed):
+            preconditionFailure("Sent INFO_RESPONSE after authentication failed")
+        case (.server, _):
+            preconditionFailure("Servers never send INFO_RESPONSE")
         }
     }
 
@@ -547,6 +603,11 @@ private extension UserAuthenticationStateMachine {
 
         case .publicKey(.unknown):
             // We don't known the algorithm, the auth attempt has failed.
+            return self.loop.makeSucceededFuture(.failure(.init(authentications: delegate.supportedAuthenticationMethods.strings, partialSuccess: false)))
+
+        case .keyboardInteractive:
+            // Server-side keyboard-interactive is not implemented; reject so the
+            // client falls back to another method.
             return self.loop.makeSucceededFuture(.failure(.init(authentications: delegate.supportedAuthenticationMethods.strings, partialSuccess: false)))
 
         case .none:

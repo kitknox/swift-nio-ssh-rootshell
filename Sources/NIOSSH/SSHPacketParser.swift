@@ -23,9 +23,20 @@ struct SSHPacketParser {
         case encryptedWaitingForBytes(UInt32, NIOSSHTransportProtection)
     }
 
+    /// Disambiguates SSH message byte 60, which is SSH_MSG_USERAUTH_PK_OK for
+    /// the publickey method and SSH_MSG_USERAUTH_INFO_REQUEST for
+    /// keyboard-interactive (RFC 4256). The connection state machine sets this
+    /// based on the user-auth request it last sent. Default `.publicKeyOK`
+    /// keeps all non-keyboard-interactive paths byte-for-byte unchanged.
+    enum UserAuthByte60Mode {
+        case publicKeyOK
+        case keyboardInteractiveInfoRequest
+    }
+
     private var buffer: ByteBuffer
     private var state: State
     private var sequenceNumber: UInt32 = 0
+    var userAuthByte60Mode: UserAuthByte60Mode = .publicKeyOK
     private let maximumPacketSize: Int
     internal static let defaultMaximumPacketSize = 1 << 17
 
@@ -220,7 +231,7 @@ struct SSHPacketParser {
             buffer.moveReaderIndex(forwardBy: MemoryLayout<UInt32>.size)
 
             var content = try buffer.sliceContentFromPadding()
-            guard let message = try content.readSSHMessage(), content.readableBytes == 0, buffer.readableBytes == 0 else {
+            guard let message = try content.readSSHMessage(byte60Mode: userAuthByte60Mode), content.readableBytes == 0, buffer.readableBytes == 0 else {
                 // Throw this error if the content wasn't exactly the right length for the message.
                 throw NIOSSHError.invalidPacketFormat
             }
@@ -236,7 +247,7 @@ struct SSHPacketParser {
             }
 
             var content = try protection.decryptAndVerifyRemainingPacket(&buffer, sequenceNumber: sequenceNumber)
-            guard let message = try content.readSSHMessage(), content.readableBytes == 0, buffer.readableBytes == 0 else {
+            guard let message = try content.readSSHMessage(byte60Mode: userAuthByte60Mode), content.readableBytes == 0, buffer.readableBytes == 0 else {
                 // Throw this error if the content wasn't exactly the right length for the message.
                 throw NIOSSHError.invalidPacketFormat
             }
