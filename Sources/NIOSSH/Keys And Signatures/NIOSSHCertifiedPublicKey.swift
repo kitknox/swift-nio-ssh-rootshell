@@ -361,6 +361,12 @@ extension NIOSSHCertifiedPublicKey {
         self.key.isValidSignature(signature, for: payload)
     }
 
+    // Maps a certificate key prefix (e.g. `ssh-ed25519-cert-v01@openssh.com`) to
+    // the embedded base key prefix used to parse the inner public key. Only the
+    // Ed25519/ECDSA cert types are supported — this set MUST stay in sync with
+    // `SSHKeyExchangeStateMachine.hostCertificateAlgorithms` (the advertised
+    // list). RSA / custom-key cert prefixes are intentionally unmapped (see the
+    // note on that property for why); they throw here rather than parse.
     internal static func baseKeyPrefixForKeyPrefix<Bytes: Collection>(_ prefix: Bytes) throws -> String.UTF8View where Bytes.Element == UInt8 {
         if prefix.elementsEqual(Self.ed25519KeyPrefix) {
             return NIOSSHPublicKey.ed25519PublicKeyPrefix

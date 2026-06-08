@@ -581,7 +581,14 @@ struct SSHKeyExchangeStateMachine {
     // The host key algorithms supported by this peer, in order of preference.
     private var supportedHostKeyAlgorithms: [Substring] {
         switch self.role {
-        case .client:
+        case .client(let configuration):
+            // When the client opts into host certificates, advertise the
+            // `*-cert-v01@openssh.com` variants ahead of the plain algorithms so
+            // a certificate-capable server selects a cert (negotiation picks the
+            // first client algorithm the server also supports).
+            if configuration.advertiseHostCertificateAlgorithms {
+                return Self.hostCertificateAlgorithms + Self.supportedServerHostKeyAlgorithms
+            }
             return Self.supportedServerHostKeyAlgorithms
         case .server(let configuration):
             return configuration.hostKeys.flatMap { $0.hostKeyAlgorithms }
@@ -631,6 +638,37 @@ extension SSHKeyExchangeStateMachine {
 
     /// All known host key algorithms.
     static let bundledServerHostKeyAlgorithms: [Substring] = ["ssh-ed25519", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp521"]
+
+    /// OpenSSH host-certificate algorithms, in the same preference order as
+    /// `bundledServerHostKeyAlgorithms`. Only advertised when the client config
+    /// sets `advertiseHostCertificateAlgorithms`. A host key received under one
+    /// of these algorithms parses into a `.certified` `NIOSSHPublicKey`.
+    ///
+    /// IMPORTANT: this list is intentionally limited to the Ed25519/ECDSA cert
+    /// types and MUST stay in sync with the cert prefixes that
+    /// `NIOSSHCertifiedPublicKey.baseKeyPrefixForKeyPrefix(_:)` can map back to a
+    /// base key. We advertise *only* what we can both parse and verify — a host
+    /// key algorithm offered here that we then fail to handle would fail key
+    /// exchange outright (the KEX state machine has no fallback), which is worse
+    /// than not offering it (the server then sends a plain host key and the
+    /// caller's normal host-key validation runs).
+    ///
+    /// RSA host certs (`ssh-rsa-cert-v01@openssh.com` and the
+    /// `rsa-sha2-*-cert-v01@openssh.com` negotiation variants) are deliberately
+    /// NOT advertised. RSA is a *custom* `NIOSSHPublicKeyProtocol` here, and two
+    /// things would need to be solved first: (1) `NIOSSHCertifiedPublicKey.keyPrefix`
+    /// returns the *base* prefix (`ssh-rsa`) for custom-keyed certs, so the KEX
+    /// host-key-algorithm prefix check would reject the cert; and (2) the RFC 8332
+    /// SHA-2 host-key negotiation for plain RSA is itself not reconciled with that
+    /// strict prefix check. Until both are addressed (and validated against a real
+    /// RSA-cert server), RSA-cert hosts safely fall back to plain host-key
+    /// validation.
+    static let hostCertificateAlgorithms: [Substring] = [
+        "ssh-ed25519-cert-v01@openssh.com",
+        "ecdsa-sha2-nistp384-cert-v01@openssh.com",
+        "ecdsa-sha2-nistp256-cert-v01@openssh.com",
+        "ecdsa-sha2-nistp521-cert-v01@openssh.com",
+    ]
 
     static var supportedServerHostKeyAlgorithms: [Substring] {
         let preferredAlgorithms = NIOSSHPublicKey.preferredPublicKeyAlgorithms.map { Substring($0.publicKeyPrefix) }

@@ -59,6 +59,22 @@ public struct SSHClientConfiguration {
     /// If not set, host certificate validation will accept any hostname.
     public var hostname: String?
 
+    /// Whether the client advertises OpenSSH host-certificate algorithms
+    /// (`*-cert-v01@openssh.com`) in its KEXINIT proposal.
+    ///
+    /// When `true`, the cert variants are offered ahead of the plain host-key
+    /// algorithms, so a certificate-capable server will present a host
+    /// certificate. The parsed certificate is delivered to the server-auth
+    /// delegate's `validateHostKey` as a `.certified` `NIOSSHPublicKey` (the
+    /// caller is then free to validate it against its own trusted CAs and
+    /// decide how to handle failures). This is independent of
+    /// `trustedHostCAKeys`: leaving that empty keeps certificate handling in
+    /// the delegate rather than failing the connection inside key exchange.
+    ///
+    /// Defaults to `false`, so a client that does not opt in negotiates exactly
+    /// as before.
+    public var advertiseHostCertificateAlgorithms: Bool = false
+
     public init(userAuthDelegate: NIOSSHClientUserAuthenticationDelegate,
                 serverAuthDelegate: NIOSSHClientServerAuthenticationDelegate,
                 globalRequestDelegate: GlobalRequestDelegate? = nil)

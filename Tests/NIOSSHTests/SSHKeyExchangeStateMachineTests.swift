@@ -150,6 +150,63 @@ final class SSHKeyExchangeStateMachineTests: XCTestCase {
         XCTAssertEqual(message.keyExchangeAlgorithms, SSHConnectionRole.client(clientConfig).keyExchangeAlgorithmNames)
     }
 
+    func testClientDoesNotAdvertiseHostCertificateAlgorithmsByDefault() throws {
+        let allocator = ByteBufferAllocator()
+        let loop = EmbeddedEventLoop()
+        let clientConfig = SSHClientConfiguration(userAuthDelegate: ExplodingAuthDelegate(), serverAuthDelegate: AcceptAllHostKeysDelegate())
+        XCTAssertFalse(clientConfig.advertiseHostCertificateAlgorithms)
+        let client = SSHKeyExchangeStateMachine(
+            allocator: allocator,
+            loop: loop,
+            role: .client(clientConfig),
+            remoteVersion: "SSH-2.0-OpenSSH_8.5",
+            keyExchangeAlgorithms: SSHKeyExchangeStateMachine.bundledKeyExchangeImplementations,
+            transportProtectionSchemes: [AES256GCMOpenSSHTransportProtection.self],
+            previousSessionIdentifier: nil
+        )
+
+        let message = client.createKeyExchangeMessage()
+        for certAlgorithm in SSHKeyExchangeStateMachine.hostCertificateAlgorithms {
+            XCTAssertFalse(
+                message.serverHostKeyAlgorithms.contains(certAlgorithm),
+                "Default proposal must not advertise \(certAlgorithm)"
+            )
+        }
+    }
+
+    func testClientAdvertisesHostCertificateAlgorithmsWhenOptedIn() throws {
+        let allocator = ByteBufferAllocator()
+        let loop = EmbeddedEventLoop()
+        var clientConfig = SSHClientConfiguration(userAuthDelegate: ExplodingAuthDelegate(), serverAuthDelegate: AcceptAllHostKeysDelegate())
+        clientConfig.advertiseHostCertificateAlgorithms = true
+        let client = SSHKeyExchangeStateMachine(
+            allocator: allocator,
+            loop: loop,
+            role: .client(clientConfig),
+            remoteVersion: "SSH-2.0-OpenSSH_8.5",
+            keyExchangeAlgorithms: SSHKeyExchangeStateMachine.bundledKeyExchangeImplementations,
+            transportProtectionSchemes: [AES256GCMOpenSSHTransportProtection.self],
+            previousSessionIdentifier: nil
+        )
+
+        let message = client.createKeyExchangeMessage()
+
+        // Cert variants are advertised, ahead of the plain algorithms so a
+        // cert-capable server selects one.
+        let certCount = SSHKeyExchangeStateMachine.hostCertificateAlgorithms.count
+        XCTAssertEqual(
+            Array(message.serverHostKeyAlgorithms.prefix(certCount)),
+            SSHKeyExchangeStateMachine.hostCertificateAlgorithms
+        )
+        // The plain algorithms still follow, so non-cert servers are unaffected.
+        for plain in SSHKeyExchangeStateMachine.bundledServerHostKeyAlgorithms {
+            XCTAssertTrue(
+                message.serverHostKeyAlgorithms.contains(plain),
+                "Plain algorithm \(plain) must remain advertised"
+            )
+        }
+    }
+
     func testRouterOSClientKeyExchangeProposalIsCompact() throws {
         let allocator = ByteBufferAllocator()
         let loop = EmbeddedEventLoop()
