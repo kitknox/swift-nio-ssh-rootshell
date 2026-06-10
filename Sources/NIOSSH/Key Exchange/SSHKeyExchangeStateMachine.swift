@@ -646,8 +646,8 @@ extension SSHKeyExchangeStateMachine {
     ///
     /// IMPORTANT: this list is intentionally limited to the Ed25519/ECDSA cert
     /// types and MUST stay in sync with the cert prefixes that
-    /// `NIOSSHCertifiedPublicKey.baseKeyPrefixForKeyPrefix(_:)` can map back to a
-    /// base key. We advertise *only* what we can both parse and verify — a host
+    /// `NIOSSHCertifiedPublicKey.embeddedKeyParser(forKeyPrefix:)` can map back to
+    /// a base key. We advertise *only* what we can both parse and verify — a host
     /// key algorithm offered here that we then fail to handle would fail key
     /// exchange outright (the KEX state machine has no fallback), which is worse
     /// than not offering it (the server then sends a plain host key and the
@@ -655,14 +655,13 @@ extension SSHKeyExchangeStateMachine {
     ///
     /// RSA host certs (`ssh-rsa-cert-v01@openssh.com` and the
     /// `rsa-sha2-*-cert-v01@openssh.com` negotiation variants) are deliberately
-    /// NOT advertised. RSA is a *custom* `NIOSSHPublicKeyProtocol` here, and two
-    /// things would need to be solved first: (1) `NIOSSHCertifiedPublicKey.keyPrefix`
-    /// returns the *base* prefix (`ssh-rsa`) for custom-keyed certs, so the KEX
-    /// host-key-algorithm prefix check would reject the cert; and (2) the RFC 8332
-    /// SHA-2 host-key negotiation for plain RSA is itself not reconciled with that
-    /// strict prefix check. Until both are addressed (and validated against a real
-    /// RSA-cert server), RSA-cert hosts safely fall back to plain host-key
-    /// validation.
+    /// NOT advertised for HOST authentication. Custom-keyed certificates can now
+    /// be parsed and serialized in general (registered key types declaring
+    /// `certifiedKeyPrefix` — used for *user* certificate authentication), but
+    /// the RFC 8332 SHA-2 host-key negotiation for plain RSA is not reconciled
+    /// with the strict KEX host-key-algorithm prefix check. Until that is
+    /// addressed (and validated against a real RSA-cert server), RSA-cert hosts
+    /// safely fall back to plain host-key validation.
     static let hostCertificateAlgorithms: [Substring] = [
         "ssh-ed25519-cert-v01@openssh.com",
         "ecdsa-sha2-nistp384-cert-v01@openssh.com",

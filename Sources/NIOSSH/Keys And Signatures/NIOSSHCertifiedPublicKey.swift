@@ -247,6 +247,29 @@ public struct NIOSSHCertifiedPublicKey {
 
         self = base
     }
+
+    /// Parse a certificate from an OpenSSH one-line string, as produced by `ssh-keygen -s`
+    /// (the contents of a `-cert.pub` file): `"<type>-cert-v01@... <base64> [comment]"`.
+    ///
+    /// Certificates over custom key types require the key type to be registered via
+    /// `NIOSSHAlgorithms.register` and to declare `certifiedKeyPrefix`.
+    public init(openSSHCertifiedPublicKey: String) throws {
+        let key = try NIOSSHPublicKey(openSSHPublicKey: openSSHCertifiedPublicKey)
+        guard let certified = NIOSSHCertifiedPublicKey(key) else {
+            throw NIOSSHError.invalidCertificate(diagnostics: "Key is not an OpenSSH certificate")
+        }
+        self = certified
+    }
+
+    /// Parse a certificate from its raw wire blob (beginning with the certificate type string),
+    /// e.g. the base64-decoded portion of a `-cert.pub` line or an SSH agent identity blob.
+    public init(certificateBlob: ByteBuffer) throws {
+        var blob = certificateBlob
+        guard let certified = try blob.readCertifiedKey() else {
+            throw NIOSSHError.invalidCertificate(diagnostics: "Incomplete or malformed certificate blob")
+        }
+        self = certified
+    }
 }
 
 extension NIOSSHCertifiedPublicKey {
@@ -345,7 +368,29 @@ extension NIOSSHCertifiedPublicKey {
         case .certified:
             preconditionFailure("base key cannot be certified")
         case .custom(let custom):
-            return custom.publicKeyPrefix.utf8
+            // Construction rejects custom keys without a certificate type name, so this
+            // can only trip if that guard is bypassed.
+            guard let certPrefix = custom.certifiedKeyPrefix else {
+                preconditionFailure("custom key type \(custom.publicKeyPrefix) does not support OpenSSH certificates")
+            }
+            return certPrefix.utf8
+        }
+    }
+
+    /// The public key algorithm name used in SSH_MSG_USERAUTH_REQUEST for this certificate.
+    ///
+    /// For the built-in key types this matches ``keyPrefix``. Custom key types may diverge:
+    /// RSA certificates carry the type string `ssh-rsa-cert-v01@openssh.com` in the blob while
+    /// the userauth request names `rsa-sha2-256-cert-v01@openssh.com` (RFC 8332 section 3.2).
+    internal var authAlgorithmName: String.UTF8View {
+        switch self.key.backingKey {
+        case .custom(let custom):
+            guard let name = custom.certifiedAuthAlgorithmName else {
+                preconditionFailure("custom key type \(custom.publicKeyPrefix) does not support OpenSSH certificates")
+            }
+            return name.utf8
+        default:
+            return self.keyPrefix
         }
     }
 
@@ -361,22 +406,40 @@ extension NIOSSHCertifiedPublicKey {
         self.key.isValidSignature(signature, for: payload)
     }
 
+    /// How to parse the public key components embedded in a certificate of a given type.
+    internal enum EmbeddedKeyParser {
+        /// A built-in key type, parsed via the base key prefix.
+        case builtin(String.UTF8View)
+        /// A custom key type; the embedded components are read with this exact type's
+        /// `read(from:)`. The TYPE is carried (not just its base prefix) because multiple
+        /// custom types may share a base prefix (e.g. two `ssh-rsa` implementations) while
+        /// only one declares certificate support — re-dispatching on the prefix string
+        /// could select a registration-order-dependent type that rejects certificates.
+        case custom(NIOSSHPublicKeyProtocol.Type)
+    }
+
     // Maps a certificate key prefix (e.g. `ssh-ed25519-cert-v01@openssh.com`) to
-    // the embedded base key prefix used to parse the inner public key. Only the
-    // Ed25519/ECDSA cert types are supported — this set MUST stay in sync with
+    // the parser for the embedded public key. The built-in Ed25519/ECDSA cert
+    // types MUST stay in sync with
     // `SSHKeyExchangeStateMachine.hostCertificateAlgorithms` (the advertised
-    // list). RSA / custom-key cert prefixes are intentionally unmapped (see the
-    // note on that property for why); they throw here rather than parse.
-    internal static func baseKeyPrefixForKeyPrefix<Bytes: Collection>(_ prefix: Bytes) throws -> String.UTF8View where Bytes.Element == UInt8 {
+    // host-key list). Custom key types (RSA, sk-*) participate by declaring
+    // `certifiedKeyPrefix` and registering via `NIOSSHAlgorithms.register`; the
+    // first registered type claiming a given certificate prefix wins.
+    internal static func embeddedKeyParser<Bytes: Collection>(forKeyPrefix prefix: Bytes) throws -> EmbeddedKeyParser where Bytes.Element == UInt8 {
         if prefix.elementsEqual(Self.ed25519KeyPrefix) {
-            return NIOSSHPublicKey.ed25519PublicKeyPrefix
+            return .builtin(NIOSSHPublicKey.ed25519PublicKeyPrefix)
         } else if prefix.elementsEqual(Self.p256KeyPrefix) {
-            return NIOSSHPublicKey.ecdsaP256PublicKeyPrefix
+            return .builtin(NIOSSHPublicKey.ecdsaP256PublicKeyPrefix)
         } else if prefix.elementsEqual(Self.p384KeyPrefix) {
-            return NIOSSHPublicKey.ecdsaP384PublicKeyPrefix
+            return .builtin(NIOSSHPublicKey.ecdsaP384PublicKeyPrefix)
         } else if prefix.elementsEqual(Self.p521KeyPrefix) {
-            return NIOSSHPublicKey.ecdsaP521PublicKeyPrefix
+            return .builtin(NIOSSHPublicKey.ecdsaP521PublicKeyPrefix)
         } else {
+            for type in NIOSSHPublicKey.allCustomPublicKeyAlgorithms {
+                if let certPrefix = type.certifiedKeyPrefix, prefix.elementsEqual(certPrefix.utf8) {
+                    return .custom(type)
+                }
+            }
             throw NIOSSHError.unknownPublicKey(algorithm: String(decoding: prefix, as: UTF8.self))
         }
     }
@@ -510,6 +573,11 @@ extension NIOSSHCertifiedPublicKey {
             if case .certified = signatureKey.backingKey {
                 throw NIOSSHError.invalidCertificate(diagnostics: "Certificate may not be signed by certified key")
             }
+            // Custom keys must declare their certificate type name: without it we cannot serialize
+            // the certificate (there is no `<base>-cert-v01` name to write on the wire).
+            if case .custom(let custom) = key.backingKey, custom.certifiedKeyPrefix == nil {
+                throw NIOSSHError.invalidCertificate(diagnostics: "Key type \(custom.publicKeyPrefix) does not support OpenSSH certificates")
+            }
 
             self.nonce = nonce
             self.serial = serial
@@ -627,11 +695,25 @@ extension ByteBuffer {
 
     mutating func readCertifiedKeyWithoutKeyPrefix<Bytes: Collection>(_ keyPrefix: Bytes) throws -> NIOSSHCertifiedPublicKey? where Bytes.Element == UInt8 {
         try self.rewindOnNilOrError { `self` in
-            let innerKeyPrefix = try NIOSSHCertifiedPublicKey.baseKeyPrefixForKeyPrefix(keyPrefix)
+            let embeddedKeyParser = try NIOSSHCertifiedPublicKey.embeddedKeyParser(forKeyPrefix: keyPrefix)
+
+            guard let nonce = self.readSSHString() else {
+                return nil
+            }
+
+            let parsedKey: NIOSSHPublicKey?
+            switch embeddedKeyParser {
+            case .builtin(let innerKeyPrefix):
+                parsedKey = try self.readPublicKeyWithoutPrefixForIdentifier(innerKeyPrefix)
+            case .custom(let type):
+                // Parse with the exact type that claimed the certificate prefix, NOT by
+                // re-dispatching on its base prefix (which is first-registered-wins and
+                // may select a different, cert-incapable type sharing the same prefix).
+                parsedKey = NIOSSHPublicKey(backingKey: .custom(try type.read(from: &self)))
+            }
 
             guard
-                let nonce = self.readSSHString(),
-                let key = try self.readPublicKeyWithoutPrefixForIdentifier(innerKeyPrefix),
+                let key = parsedKey,
                 let serial = self.readInteger(as: UInt64.self),
                 let rawType = self.readInteger(as: UInt32.self),
                 let keyID = self.readSSHStringAsString(),

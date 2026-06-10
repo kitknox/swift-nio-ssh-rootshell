@@ -49,6 +49,25 @@ public protocol NIOSSHPublicKeyProtocol {
     /// The returned value MUST NOT overlap with other public key implementations or a specifications that the public key does not implement.
     static var publicKeyPrefix: String { get }
 
+    /// The OpenSSH certificate type name for this key type (e.g. `ssh-rsa-cert-v01@openssh.com`).
+    ///
+    /// When non-nil, ``NIOSSHCertifiedPublicKey`` can parse and serialize OpenSSH certificates whose
+    /// embedded key is of this type: the certificate's key-specific components are read and written via
+    /// this type's `read(from:)`/`write(to:)` (with no inner type string, per `PROTOCOL.certkeys`).
+    ///
+    /// Defaults to `nil`, meaning this key type does not support OpenSSH certificates. This is a
+    /// protocol requirement (with a default) rather than a plain extension member so lookups through
+    /// `NIOSSHPublicKeyProtocol.Type` existentials dispatch to the conforming type's value.
+    static var certifiedKeyPrefix: String? { get }
+
+    /// The public key algorithm name sent in SSH_MSG_USERAUTH_REQUEST when a certificate built on this
+    /// key type is used for user authentication. Defaults to ``certifiedKeyPrefix``.
+    ///
+    /// RSA keys must override this to `rsa-sha2-256-cert-v01@openssh.com` (RFC 8332 section 3.2): the
+    /// certificate blob's type string stays `ssh-rsa-cert-v01@openssh.com` while the userauth request
+    /// names the SHA-2 cert algorithm.
+    static var certifiedAuthAlgorithmName: String? { get }
+
     /// The raw reprentation of this publc key as a blob.
     var rawRepresentation: Data { get }
 
@@ -68,6 +87,12 @@ public extension NIOSSHPublicKeyProtocol {
     /// If not provided, defaults to publicKeyPrefix.
     /// This is useful for RSA keys that use rsa-sha2-* signature algorithms while maintaining ssh-rsa key type.
     static var authAlgorithmName: String { publicKeyPrefix }
+
+    /// Default: no OpenSSH certificate support for this key type.
+    static var certifiedKeyPrefix: String? { nil }
+
+    /// Default: the userauth algorithm name matches the certificate type name.
+    static var certifiedAuthAlgorithmName: String? { certifiedKeyPrefix }
 }
 
 internal extension NIOSSHPublicKeyProtocol {
@@ -77,6 +102,14 @@ internal extension NIOSSHPublicKeyProtocol {
 
     var authAlgorithmName: String {
         Self.authAlgorithmName
+    }
+
+    var certifiedKeyPrefix: String? {
+        Self.certifiedKeyPrefix
+    }
+
+    var certifiedAuthAlgorithmName: String? {
+        Self.certifiedAuthAlgorithmName
     }
 }
 

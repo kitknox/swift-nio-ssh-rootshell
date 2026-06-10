@@ -217,7 +217,7 @@ extension NIOSSHPublicKey {
             }
             return publicKey.authAlgorithmName.utf8
         case .certified(let base):
-            return base.keyPrefix
+            return base.authAlgorithmName
         }
     }
 
@@ -229,27 +229,45 @@ extension NIOSSHPublicKey {
         Self.ed25519PublicKeyPrefix, Self.ecdsaP384PublicKeyPrefix, Self.ecdsaP256PublicKeyPrefix, Self.ecdsaP521PublicKeyPrefix,
     ]
 
+    /// The OpenSSH certificate algorithm names for the bundled key types.
+    private static let bundledCertificateAlgorithms: [String.UTF8View] = [
+        NIOSSHCertifiedPublicKey.ed25519KeyPrefix,
+        NIOSSHCertifiedPublicKey.p384KeyPrefix,
+        NIOSSHCertifiedPublicKey.p256KeyPrefix,
+        NIOSSHCertifiedPublicKey.p521KeyPrefix,
+    ]
+
     static var knownAlgorithms: [String.UTF8View] {
-        // Preferred custom algorithms go first (highest priority)
         var algorithms = [String.UTF8View]()
-        for algorithm in preferredPublicKeyAlgorithms {
+
+        func appendCustomAlgorithm(_ algorithm: NIOSSHPublicKeyProtocol.Type) {
             let keyPrefix = algorithm.publicKeyPrefix
             algorithms.append(keyPrefix.utf8)
             if keyPrefix == "ssh-rsa" {
                 algorithms.append("rsa-sha2-256".utf8)
+            }
+            // Certificate names: the blob type string and (when distinct, e.g. RSA's
+            // rsa-sha2-256-cert-v01@openssh.com) the userauth algorithm name.
+            if let certPrefix = algorithm.certifiedKeyPrefix {
+                algorithms.append(certPrefix.utf8)
+                if let certAuthName = algorithm.certifiedAuthAlgorithmName, certAuthName != certPrefix {
+                    algorithms.append(certAuthName.utf8)
+                }
             }
         }
 
-        // Then bundled algorithms (ed25519, ecdsa)
+        // Preferred custom algorithms go first (highest priority)
+        for algorithm in preferredPublicKeyAlgorithms {
+            appendCustomAlgorithm(algorithm)
+        }
+
+        // Then bundled algorithms (ed25519, ecdsa) and their certificate variants
         algorithms.append(contentsOf: bundledAlgorithms)
+        algorithms.append(contentsOf: bundledCertificateAlgorithms)
 
         // Then regular custom algorithms (appended after bundled)
         for algorithm in customPublicKeyAlgorithms {
-            let keyPrefix = algorithm.publicKeyPrefix
-            algorithms.append(keyPrefix.utf8)
-            if keyPrefix == "ssh-rsa" {
-                algorithms.append("rsa-sha2-256".utf8)
-            }
+            appendCustomAlgorithm(algorithm)
         }
         return algorithms
     }
@@ -515,9 +533,9 @@ extension ByteBuffer {
         case .ecdsaP521(let key):
             return self.writeECDSAP521PublicKey(baseKey: key)
         case .custom(let key):
-            var writtenBytes = writeSSHString(key.publicKeyPrefix.utf8)
-            writtenBytes += key.write(to: &self)
-            return writtenBytes
+            // Certificates embed the key-specific components directly, with NO inner
+            // type string (PROTOCOL.certkeys) — same as the built-in key types above.
+            return key.write(to: &self)
         case .certified:
             preconditionFailure("Certified keys are the only callers of this method, and cannot contain themselves")
         }
