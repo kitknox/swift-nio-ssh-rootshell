@@ -361,6 +361,23 @@ final class ByteBufferSSHTests: XCTestCase {
 
         XCTAssertNoThrow(XCTAssertNotNil(try buffer.readSSHHostKey()))
     }
+
+    // Regression test for the key-exchange crash: writeCompositeSSHString must not
+    // trap on a buffer with no spare capacity. Backport of apple/swift-nio-ssh
+    // db57f32 "Correctly resize ByteBuffers (#150)".
+    func testCompositeStringDoesTheRightThingWithBB() throws {
+        var buffer = ByteBuffer()
+        XCTAssertEqual(buffer.capacity, 0)
+
+        buffer.writeCompositeSSHString {
+            $0.writeInteger(UInt64(9))
+        }
+        let writtenBytes = buffer.readBytes(length: buffer.readableBytes)
+        XCTAssertEqual(
+            writtenBytes,
+            [0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 9]
+        )
+    }
 }
 
 private extension ByteBuffer {

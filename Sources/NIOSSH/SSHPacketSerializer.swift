@@ -61,7 +61,11 @@ struct SSHPacketSerializer {
             ///   byte[m]   mac (Message Authentication Code - MAC); m = mac_length
 
             /// payload
-            buffer.moveWriterIndex(forwardBy: 5)
+            // Write placeholders for packet_length (UInt32) + padding_length (UInt8)
+            // rather than advancing the writer index, which does not grow the buffer
+            // and traps at a capacity boundary. Backport of apple/swift-nio-ssh
+            // db57f32 "Correctly resize ByteBuffers (#150)".
+            buffer.writeMultipleIntegers(UInt32(0), UInt8(0))
             let messageLength = buffer.writeSSHMessage(message)
 
             /// RFC 4253 § 6:
