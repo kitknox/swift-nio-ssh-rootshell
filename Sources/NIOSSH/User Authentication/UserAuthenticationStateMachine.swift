@@ -228,7 +228,11 @@ extension UserAuthenticationStateMachine {
                     violation: "server sent public key OK without an outstanding public key probe"
                 )
             }
-            guard pending.publicKey == message.key else {
+            // Wire-blob comparison, not `==`: the PK_OK echo parses into the
+            // bundled backing for bundled algorithms, so an offer made with a
+            // `.custom` key (hardware token, ssh-agent) never compares equal
+            // to its own echo by backing-based equality.
+            guard pending.publicKey.hasSameWireRepresentation(as: message.key) else {
                 self.pendingPublicKeyProbe = nil
                 throw NIOSSHError.protocolViolation(
                     protocolName: Self.protocolName,

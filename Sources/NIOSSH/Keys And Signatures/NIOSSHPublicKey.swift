@@ -469,6 +469,24 @@ extension NIOSSHPublicKey {
     func writeWithoutHeader(to buffer: inout ByteBuffer) -> Int {
         buffer.writeSSHHostKeyWithoutHeader(self)
     }
+
+    /// True when both keys serialize to the same SSH wire blob.
+    ///
+    /// `==` compares within a backing only: a key parsed off the wire uses
+    /// the bundled backing for bundled algorithms, so it never compares
+    /// equal to the same key held in a `.custom` backing (external signers
+    /// such as hardware tokens or ssh-agents). Offer/echo checks like
+    /// USERAUTH_PK_OK must compare the canonical serialization instead.
+    func hasSameWireRepresentation(as other: NIOSSHPublicKey) -> Bool {
+        if self == other {
+            return true
+        }
+        var lhs = ByteBufferAllocator().buffer(capacity: 512)
+        var rhs = ByteBufferAllocator().buffer(capacity: 512)
+        lhs.writeSSHHostKey(self)
+        rhs.writeSSHHostKey(other)
+        return lhs.readableBytesView.elementsEqual(rhs.readableBytesView)
+    }
 }
 
 extension ByteBuffer {
