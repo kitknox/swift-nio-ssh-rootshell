@@ -46,6 +46,12 @@ public enum SSHChannelType: Equatable, NIOSSHSendable {
     /// `streamlocal-forward@openssh.com` global request from the client.
     /// The canonical use case is GPG agent forwarding.
     case forwardedStreamLocal(ForwardedStreamLocal)
+
+    /// `direct-streamlocal@openssh.com` — a client-initiated connection
+    /// to a Unix-domain socket on the server, the streamlocal analogue
+    /// of direct TCP/IP. Used to reach daemons that expose only a local
+    /// socket (e.g. a multiplexer control API).
+    case directStreamLocal(DirectStreamLocal)
 }
 
 public extension SSHChannelType {
@@ -87,6 +93,17 @@ public extension SSHChannelType {
         /// Path of the remote-side Unix-domain socket that the peer
         /// connected to. Matches the path previously bound by the
         /// client's `streamlocal-forward@openssh.com` global request.
+        public var socketPath: String
+
+        public init(socketPath: String) {
+            self.socketPath = socketPath
+        }
+    }
+}
+
+public extension SSHChannelType {
+    struct DirectStreamLocal: Equatable, NIOSSHSendable {
+        /// Path of the Unix-domain socket on the server to connect to.
         public var socketPath: String
 
         public init(socketPath: String) {
@@ -142,6 +159,8 @@ extension SSHChannelType {
             self = .authAgent
         case .forwardedStreamLocal(let message):
             self = .forwardedStreamLocal(.init(socketPath: message.socketPath))
+        case .directStreamLocal(let message):
+            self = .directStreamLocal(.init(socketPath: message.socketPath))
         }
     }
 }
@@ -159,6 +178,8 @@ extension SSHMessage.ChannelOpenMessage.ChannelType {
             self = .authAgent
         case .forwardedStreamLocal(let data):
             self = .forwardedStreamLocal(.init(socketPath: data.socketPath))
+        case .directStreamLocal(let data):
+            self = .directStreamLocal(.init(socketPath: data.socketPath))
         }
     }
 }

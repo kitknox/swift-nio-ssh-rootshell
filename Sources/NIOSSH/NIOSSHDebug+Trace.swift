@@ -230,6 +230,7 @@ extension SSHMessage {
             case .directTCPIP(let d): typeStr = "direct-tcpip dest=\(d.hostToConnectTo):\(d.portToConnectTo)"
             case .authAgent: typeStr = "auth-agent@openssh.com"
             case .forwardedStreamLocal(let f): typeStr = "forwarded-streamlocal socket=\(f.socketPath)"
+            case .directStreamLocal(let d): typeStr = "direct-streamlocal socket=\(d.socketPath)"
             }
             return "CHANNEL_OPEN type=\(typeStr) sender=\(m.senderChannel) initialWindow=\(m.initialWindowSize) maxPacket=\(m.maximumPacketSize)"
 

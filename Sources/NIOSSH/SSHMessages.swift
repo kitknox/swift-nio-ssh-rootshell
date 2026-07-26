@@ -276,6 +276,10 @@ extension SSHMessage {
             /// global request, forwarded back to the client. The
             /// canonical use case is GPG agent forwarding.
             case forwardedStreamLocal(ForwardedStreamLocal)
+            /// `direct-streamlocal@openssh.com` — client-initiated
+            /// connection to a Unix-domain socket on the server, the
+            /// streamlocal analogue of `direct-tcpip`.
+            case directStreamLocal(DirectStreamLocal)
         }
 
         struct ForwardedTCPIP: Equatable {
@@ -298,6 +302,14 @@ extension SSHMessage {
             // The wire format also includes a `reserved` string field
             // that OpenSSH currently always sends as empty. We drop it
             // here because we never inspect or surface it.
+        }
+
+        struct DirectStreamLocal: Equatable {
+            /// Path of the server-side Unix socket to connect to.
+            var socketPath: String
+            // The wire format also carries `string reserved` and
+            // `uint32 reserved` fields, always empty/zero per the
+            // OpenSSH PROTOCOL doc; written as such, never surfaced.
         }
 
         var type: ChannelType
@@ -1021,6 +1033,19 @@ extension ByteBuffer {
                 }
                 type = .forwardedStreamLocal(.init(socketPath: socketPath))
 
+            case "direct-streamlocal@openssh.com":
+                // Client-initiated Unix-socket connection. Payload is
+                // `string socketPath, string reserved, uint32 reserved`
+                // per the OpenSSH `streamlocal` PROTOCOL extension.
+                guard
+                    let socketPath = self.readSSHStringAsString(),
+                    let _ = self.readSSHStringAsString(),
+                    let _ = self.readInteger(as: UInt32.self)
+                else {
+                    return nil
+                }
+                type = .directStreamLocal(.init(socketPath: socketPath))
+
             default:
                 throw NIOSSHError.unknownPacketType(diagnostic: "Channel request with \(typeRawValue)")
             }
@@ -1569,6 +1594,9 @@ extension ByteBuffer {
 
         case .forwardedStreamLocal:
             writtenBytes += self.writeSSHString("forwarded-streamlocal@openssh.com".utf8)
+
+        case .directStreamLocal:
+            writtenBytes += self.writeSSHString("direct-streamlocal@openssh.com".utf8)
         }
 
         writtenBytes += self.writeInteger(message.senderChannel)
@@ -1601,6 +1629,12 @@ extension ByteBuffer {
             writtenBytes += self.writeSSHString(data.socketPath.utf8)
             // Reserved field, always empty per OpenSSH PROTOCOL.
             writtenBytes += self.writeSSHString("".utf8)
+
+        case .directStreamLocal(let data):
+            writtenBytes += self.writeSSHString(data.socketPath.utf8)
+            // Reserved string + uint32, always empty/zero per OpenSSH PROTOCOL.
+            writtenBytes += self.writeSSHString("".utf8)
+            writtenBytes += self.writeInteger(UInt32(0))
         }
 
         return writtenBytes
