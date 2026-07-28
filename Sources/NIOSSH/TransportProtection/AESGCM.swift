@@ -130,7 +130,11 @@ extension AESGCMTransportProtection: NIOSSHTransportProtection {
         let packetPaddingIndex = outboundBuffer.writerIndex + packetLengthLength
         let packetPaddingLength = MemoryLayout<UInt8>.size
 
-        outboundBuffer.moveWriterIndex(forwardBy: packetLengthLength + packetPaddingLength)
+        // Write placeholders for packet_length (UInt32) + padding_length (UInt8)
+        // rather than advancing the writer index, which does not grow the buffer
+        // and traps at a capacity boundary. Backport of apple/swift-nio-ssh
+        // db57f32 "Correctly resize ByteBuffers (#150)".
+        outboundBuffer.writeMultipleIntegers(UInt32(0), UInt8(0))
 
         // First, we write the packet.
         let payloadBytes = outboundBuffer.writeEncryptablePayload(packet)
