@@ -1,6 +1,43 @@
-# SwiftNIO SSH
+# SwiftNIO SSH — Rootshell fork
 
-This project contains SSH support using [SwiftNIO](https://github.com/apple/swift-nio).
+SwiftNIO SSH provides programmatic SSH support using [SwiftNIO](https://github.com/apple/swift-nio).
+
+This repository is the [Rootshell](https://www.rootshell.com)-maintained fork of [apple/swift-nio-ssh](https://github.com/apple/swift-nio-ssh), descended through the extended NIOSSH fork maintained for Citadel. It now follows an independent, Rootshell-driven roadmap and does not automatically merge or track subsequent upstream changes.
+
+The `NIOSSH` module and product names remain unchanged. The fork is used by [Rootshell](https://www.rootshell.com) and [Citadel](https://github.com/kitknox/Citadel-rootshell), but it remains an independently usable Swift package. Report Rootshell application problems in the [Rootshell issue tracker](https://github.com/kitknox/rootshell/issues); report reproducible library problems in this repository.
+
+## Rootshell changes
+
+Starting from the inherited Citadel-maintained baseline, Kit Knox added the following Rootshell-driven changes:
+
+- RSA SHA-256 signatures
+- OpenSSH user certificates over registered custom key types and opt-in advertising of bundled host-certificate algorithms
+- Preferred custom-key registration used by ML-DSA host keys
+- Client-side keyboard-interactive and probe-then-sign public-key authentication
+- SSH agent forwarding and direct and reverse OpenSSH Unix-domain socket forwarding
+- Public custom global requests for keepalives and other extensions
+- Negotiated-algorithm introspection and opt-in protocol tracing
+- Flow-control and multiplexing fixes for long-lived tunnels
+- Encrypted-packet length hardening, AES-GCM framing corrections, and peer-specific negotiation controls
+
+The Rootshell changes listed above have not received an independent security audit. The package remains pre-1.0, and source and API compatibility are maintained on a best-effort basis.
+
+## Requirements and installation
+
+- Swift tools 5.10 or newer
+- macOS 10.15 or newer, iOS/iPadOS 13 or newer, watchOS 6 or newer, or tvOS 13 or newer
+- Other platforms supported by this package's SwiftNIO and Swift Crypto dependencies
+
+Rootshell primarily exercises this fork through its Apple-platform applications. Depend on an exact fork release rather than the moving `main` branch:
+
+```swift
+.package(
+    url: "https://github.com/kitknox/swift-nio-ssh-rootshell.git",
+    exact: "0.1.0"
+)
+```
+
+Then add `.product(name: "NIOSSH", package: "swift-nio-ssh-rootshell")` to the target that uses it.
 
 ## What is SwiftNIO SSH?
 
@@ -10,17 +47,16 @@ There are a number of reasons to provide a programmatic SSH implementation. One 
 
 Another good reason to provide programmatic SSH is that it is not uncommon for services to need to interact with other services in a way that involves running commands. While `Process` solves this for the local use-case, sometimes the commands that need to be invoked are remote. While `Process` could launch an `ssh` client as a sub-process in order to run this invocation, it can be substantially more straightforward to simply invoke SSH directly. This is [`libssh2`](https://www.libssh2.org)'s target use-case. SwiftNIO SSH provides the equivalent of the networking and cryptographic layer of libssh2, allowing motivated users to drive SSH sessions directly from within Swift services.
 
-SwiftNIO SSH requires Swift 5.4 and newer. 0.3.x supports Swift 5.2 and 5.3, 0.2.x supports Swift 5.1.
-
 ## What does SwiftNIO SSH support?
 
 SwiftNIO SSH supports SSHv2 with the following feature set:
 
 - All session channel features, including shell and exec channel requests
-- Direct and reverse TCP port forwarding
-- Modern cryptographic primitives only: Ed25519 and ECDSA over the major NIST curves (P256, P384, P521) for asymmetric cryptography, AES-GCM for symmetric cryptography, x25519 for key exchange
-- Password and public key user authentication
-- Supports all platforms supported by SwiftNIO and Swift Crypto
+- Direct and reverse TCP and Unix-domain socket forwarding
+- Ed25519, ECDSA over P256, P384, and P521, plus registered custom key algorithms
+- AES-GCM transport protection, Curve25519 and NIST-curve key exchange, plus registered custom algorithms
+- Password, public-key, certificate, and client-side keyboard-interactive user authentication
+- SSH agent forwarding and custom global requests
 
 ## How do I use SwiftNIO SSH?
 
@@ -72,7 +108,7 @@ An active SSH connection therefore looks like this:
                              └──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-An SSH channel is invoked with a channel type. NIOSSH supports three: `session`, `directTCPIP`, and `forwardedTCPIP`. The most common channel type is `session`: `session` is used to represent the invocation of a program, whether a specific named program or a shell. The other two channel types are related to TCP port forwarding, and will be discussed later.
+An SSH channel is invoked with a channel type. NIOSSH supports `session`, `directTCPIP`, `forwardedTCPIP`, `authAgent`, `directStreamLocal`, and `forwardedStreamLocal`. The most common channel type is `session`: it represents the invocation of a program, whether a specific named program or a shell. The remaining types support TCP forwarding, SSH agent forwarding, and OpenSSH Unix-domain socket forwarding.
 
 An SSH channel operates on a single data type: `SSHChannelData`. This structure encapsulates the fact that SSH supports both regular and "extended" channel data. The regular channel data (`SSHChannelData.DataType.channel`) is used for the vast majority of core data. In `session` channels the `.channel` data type is used for standard input and standard output: the `.stdErr` data type is used for standard error (naturally). In TCP forwarding channels, the `.channel` data type is the only kind used, and represents the forwarded data.
 
@@ -134,3 +170,19 @@ Global requests are initiated using `NIOSSHHandler.sendGlobalRequest`, and are r
 Servers may be notified of and respond to these requests using a `GlobalRequestDelegate`. The method to implement here is `tcpForwardingRequest(_:handler:promise:)`. This delegate method will be invoked any time a global request is received. The response to the request is passed into `promise`.
 
 Forwarded channels are then sent from server to client using the `.forwardedTCPIP` channel type.
+
+## Contributing
+
+Focused issues and pull requests are welcome. The roadmap is driven by Rootshell's requirements, and maintenance is provided on a best-effort basis without a support SLA.
+
+This fork does not accept automatic or incidental synchronization from upstream SwiftNIO SSH. Upstream-derived fixes should be selected deliberately, kept narrowly scoped, and retain their original attribution.
+
+## Security
+
+Do not report suspected vulnerabilities in a public issue. Submit them privately through this repository's [GitHub security advisories](https://github.com/kitknox/swift-nio-ssh-rootshell/security/advisories/new). Do not include credentials, private keys, sensitive host information, or unredacted logs in any report.
+
+## Acknowledgements and license
+
+SwiftNIO SSH was created by Apple and the SwiftNIO project contributors. This fork also incorporates work from the Citadel-maintained NIOSSH lineage and preserves its Git history and copyright attribution. The Rootshell changes listed above were developed by Kit Knox.
+
+SwiftNIO SSH is distributed under the [Apache License 2.0](LICENSE.txt).
