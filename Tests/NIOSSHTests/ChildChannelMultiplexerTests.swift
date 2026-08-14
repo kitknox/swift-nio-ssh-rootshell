@@ -185,7 +185,12 @@ final class ChildChannelMultiplexerTests: XCTestCase {
 
     private func harness(_ initializer: SSHChildChannel.Initializer? = nil) -> TestHarness {
         let delegate = DummyDelegate()
-        let multiplexer = SSHChannelMultiplexer(delegate: delegate, allocator: delegate.allocator, childChannelInitializer: initializer)
+        let multiplexer = SSHChannelMultiplexer(
+            delegate: delegate,
+            allocator: delegate.allocator,
+            childChannelInitializer: initializer,
+            initialWindowSize: SSHPacketParser.defaultMaximumPacketSize
+        )
         return TestHarness(delegate: delegate, multiplexer: multiplexer)
     }
 
@@ -415,15 +420,17 @@ final class ChildChannelMultiplexerTests: XCTestCase {
         XCTAssertEqual(harness.flushedMessages.count, 1)
         let channelID = self.assertChannelOpen(harness.flushedMessages.first)
 
-        // Closing is delayed until we receive a response to our outbound message.
+        // A pre-activation close completes locally while retaining enough state
+        // to clean up if the peer later confirms the channel.
         var didClose = false
         channel.close().whenComplete { _ in didClose = true }
-        XCTAssertFalse(didClose)
+        harness.eventLoop.run()
+        XCTAssertTrue(didClose)
         XCTAssertEqual(harness.flushedMessages.count, 1)
 
         // Now we drop in an open confirmation. This immediately triggers a close message.
         XCTAssertNoThrow(try harness.multiplexer.receiveMessage(self.openConfirmation(originalChannelID: channelID!, peerChannelID: 1)))
-        XCTAssertFalse(didClose)
+        XCTAssertTrue(didClose)
         XCTAssertEqual(harness.flushedMessages.count, 2)
         self.assertChannelClose(harness.flushedMessages.last, recipientChannel: 1)
 
@@ -513,20 +520,17 @@ final class ChildChannelMultiplexerTests: XCTestCase {
         XCTAssertEqual(harness.flushedMessages.count, 1)
         let channelID = self.assertChannelOpen(harness.flushedMessages.first)
 
-        // Closing is delayed until we receive a response to our outbound message.
-        var closeError: Error?
-        channel.close().whenFailure { closeError = $0 }
-        XCTAssertNil(closeError)
+        // A pre-activation close completes locally without waiting for the peer.
+        var didClose = false
+        channel.close().whenComplete { _ in didClose = true }
+        harness.eventLoop.run()
+        XCTAssertTrue(didClose)
         XCTAssertEqual(harness.flushedMessages.count, 1)
 
         // Now we drop in an open failure. This does not trigger a close message.
         XCTAssertNoThrow(try harness.multiplexer.receiveMessage(self.openFailure(originalChannelID: channelID!, reasonCode: 2)))
-        XCTAssertNotNil(closeError)
+        XCTAssertTrue(didClose)
         XCTAssertEqual(harness.flushedMessages.count, 1)
-
-        if let error = closeError {
-            XCTAssertEqual((error as? NIOSSHError)?.type, .channelSetupRejected)
-        }
 
         // No longer active.
         XCTAssertFalse(channel.isActive)
