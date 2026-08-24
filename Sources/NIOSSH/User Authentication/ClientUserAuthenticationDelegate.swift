@@ -54,6 +54,15 @@ public struct NIOSSHKeyboardInteractiveAuthenticationNotSupported: Error {
 /// enabled by allowing implementers to satisfy a promise, rather than requiring that they
 /// synchronously provide a response.
 public protocol NIOSSHClientUserAuthenticationDelegate {
+    /// Informs the delegate which public-key signature algorithms the server
+    /// advertised through RFC 8308's `server-sig-algs` extension.
+    ///
+    /// This callback occurs before the first authentication offer whenever the
+    /// server sends EXT_INFO. An absent callback means the server did not
+    /// advertise this capability; compatibility policy for such legacy peers
+    /// remains the responsibility of the delegate.
+    func serverSignatureAlgorithmsReceived(_ algorithms: [String])
+
     /// Called when ``NIOSSH`` would like to attempt to offer a new authentication method.
     ///
     /// The callback is provided the authentictation methods that the server is willing to accept in
@@ -98,6 +107,8 @@ public protocol NIOSSHClientUserAuthenticationDelegate {
 }
 
 extension NIOSSHClientUserAuthenticationDelegate {
+    public func serverSignatureAlgorithmsReceived(_: [String]) {}
+
     /// Default: most delegates don't need to react to partial success.
     public func authenticationSucceededPartially() {}
 

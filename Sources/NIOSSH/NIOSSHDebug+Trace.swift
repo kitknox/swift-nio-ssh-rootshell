@@ -140,6 +140,9 @@ extension SSHMessage {
         case .serviceAccept(let r):
             return "SERVICE_ACCEPT service=\(r.service)"
 
+        case .extensionInfo(let message):
+            return "EXT_INFO extensions=\(message.extensions.count)"
+
         case .keyExchange(let m):
             return "KEXINIT" +
                 " kex=[\(NIOSSHTrace.joinAlgs(m.keyExchangeAlgorithms))]" +

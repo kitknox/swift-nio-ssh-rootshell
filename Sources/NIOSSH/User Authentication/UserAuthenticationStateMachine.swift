@@ -54,6 +54,7 @@ private extension UserAuthenticationStateMachine {
     struct PendingPublicKeyProbe {
         var username: String
         var service: String
+        var publicKeyAlgorithmName: String
         var publicKey: NIOSSHPublicKey
         var privateKey: NIOSSHPrivateKey
     }
@@ -62,6 +63,20 @@ private extension UserAuthenticationStateMachine {
 // MARK: Receiving Messages
 
 extension UserAuthenticationStateMachine {
+    mutating func receiveExtensionInfo(_ message: SSHMessage.ExtensionInfoMessage) throws {
+        switch self.delegate {
+        case .client(let delegate):
+            if let algorithms = message.serverSignatureAlgorithms {
+                delegate.serverSignatureAlgorithmsReceived(algorithms)
+            }
+        case .server:
+            throw NIOSSHError.protocolViolation(
+                protocolName: Self.protocolName,
+                violation: "client sent EXT_INFO during user authentication"
+            )
+        }
+    }
+
     /// A ServiceRequest message was received from the remote peer.
     mutating func receiveServiceRequest(_ message: SSHMessage.ServiceRequestMessage) throws -> SSHMessage.ServiceAcceptMessage? {
         switch (self.delegate, self.state) {
@@ -239,12 +254,26 @@ extension UserAuthenticationStateMachine {
                     violation: "server accepted a different public key than the one offered"
                 )
             }
+            // Some servers echo the key blob type (for example `ssh-rsa`)
+            // instead of the probe's signature algorithm (`rsa-sha2-256`).
+            // OpenSSH accepts this when both names resolve to the same key
+            // type. Keep signing with our original algorithm name below.
+            guard pending.publicKey.isValidAuthenticationAlgorithmName(
+                message.publicKeyAlgorithmName.utf8
+            ) else {
+                self.pendingPublicKeyProbe = nil
+                throw NIOSSHError.protocolViolation(
+                    protocolName: Self.protocolName,
+                    violation: "server accepted an algorithm for a different public key type"
+                )
+            }
 
             let dataToSign = UserAuthSignablePayload(
                 sessionIdentifier: self.sessionID,
                 userName: pending.username,
                 serviceName: pending.service,
-                publicKey: pending.publicKey
+                publicKey: pending.publicKey,
+                authenticationAlgorithmName: pending.publicKeyAlgorithmName
             )
             let signature = try pending.privateKey.sign(dataToSign)
             self.pendingPublicKeyProbe = nil
@@ -252,7 +281,8 @@ extension UserAuthenticationStateMachine {
             return SSHMessage.UserAuthRequestMessage(
                 username: pending.username,
                 service: pending.service,
-                method: .publicKey(.known(key: pending.publicKey, signature: signature))
+                method: .publicKey(.known(key: pending.publicKey, signature: signature)),
+                publicKeyAlgorithmName: pending.publicKeyAlgorithmName
             )
         case (.client, .authenticationSucceeded):
             throw NIOSSHError.protocolViolation(
@@ -350,6 +380,8 @@ extension UserAuthenticationStateMachine {
                 self.pendingPublicKeyProbe = PendingPublicKeyProbe(
                     username: message.username,
                     service: message.service,
+                    publicKeyAlgorithmName: message.publicKeyAlgorithmName
+                        ?? String(decoding: key.authAlgorithmName, as: UTF8.self),
                     publicKey: key,
                     privateKey: signingPrivateKey
                 )
@@ -538,10 +570,23 @@ private extension UserAuthenticationStateMachine {
 
         case .publicKey(.known(key: let key, signature: .some(let signature))):
             // This is a direct request to auth, just pass it through.
-            let dataToSign = UserAuthSignablePayload(sessionIdentifier: sessionID, userName: request.username, serviceName: request.service, publicKey: key)
+            let dataToSign = UserAuthSignablePayload(
+                sessionIdentifier: sessionID,
+                userName: request.username,
+                serviceName: request.service,
+                publicKey: key,
+                authenticationAlgorithmName: request.publicKeyAlgorithmName
+            )
             let supportedMethods = delegate.supportedAuthenticationMethods
 
-            guard key.isValidSignature(signature, for: dataToSign) else {
+            let authenticationAlgorithmName = request.publicKeyAlgorithmName
+                ?? String(decoding: key.authAlgorithmName, as: UTF8.self)
+            guard signature.matches(
+                      authenticationAlgorithmName: authenticationAlgorithmName,
+                      publicKey: key
+                  ),
+                  key.isValidSignature(signature, for: dataToSign)
+            else {
                 // Whoops, signature not valid.
                 return self.loop.makeSucceededFuture(.failure(.init(authentications: supportedMethods.strings, partialSuccess: false)))
             }
@@ -596,14 +641,22 @@ private extension UserAuthenticationStateMachine {
                         acceptableCriticalOptions: config.acceptableCriticalOptions
                     )
                     // Certificate is valid
-                    return self.loop.makeSucceededFuture(.publicKeyOK(.init(key: key)))
+                    return self.loop.makeSucceededFuture(.publicKeyOK(.init(
+                        publicKeyAlgorithmName: request.publicKeyAlgorithmName
+                            ?? String(decoding: key.authAlgorithmName, as: UTF8.self),
+                        key: key
+                    )))
                 } catch {
                     // Certificate validation failed, reject it
                     return self.loop.makeSucceededFuture(.failure(.init(authentications: delegate.supportedAuthenticationMethods.strings, partialSuccess: false)))
                 }
             }
             // For now we do a shortcut: we just say that all non-certificate keys are acceptable, rather than ask the delegate.
-            return self.loop.makeSucceededFuture(.publicKeyOK(.init(key: key)))
+            return self.loop.makeSucceededFuture(.publicKeyOK(.init(
+                publicKeyAlgorithmName: request.publicKeyAlgorithmName
+                    ?? String(decoding: key.authAlgorithmName, as: UTF8.self),
+                key: key
+            )))
 
         case .publicKey(.unknown):
             // We don't known the algorithm, the auth attempt has failed.

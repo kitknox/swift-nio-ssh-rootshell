@@ -26,6 +26,7 @@ import NIOCore
 public struct NIOSSHPrivateKey {
     /// The actual key structure used to perform the key operations.
     internal var backingKey: BackingKey
+    private var authenticationAlgorithmNameOverride: String? = nil
 
     private init(backingKey: BackingKey) {
         self.backingKey = backingKey
@@ -98,7 +99,15 @@ public struct NIOSSHPrivateKey {
         case .ecdsaP521:
             return ["ecdsa-sha2-nistp521"]
         case .custom(let backingKey):
-            return [Substring(backingKey.keyPrefix)]
+            var seen = Set<Substring>()
+            var algorithms: [Substring] = []
+            for name in backingKey.hostKeyAlgorithms {
+                let name = Substring(name)
+                if seen.insert(name).inserted {
+                    algorithms.append(name)
+                }
+            }
+            return algorithms
         #if canImport(Darwin)
         case .secureEnclaveP256:
             return ["ecdsa-sha2-nistp256"]
@@ -147,7 +156,13 @@ extension NIOSSHPrivateKey {
             return NIOSSHSignature(backingSignature: .ecdsaP521(signature))
         case .custom(let key):
             let signature = try digest.withUnsafeBytes { ptr in
-                try key.signature(for: ptr)
+                if let authenticationAlgorithmNameOverride {
+                    return try key.signature(
+                        for: ptr,
+                        authenticationAlgorithmName: authenticationAlgorithmNameOverride
+                    )
+                }
+                return try key.signature(for: ptr)
             }
             return NIOSSHSignature(backingSignature: .custom(signature))
 
@@ -159,6 +174,12 @@ extension NIOSSHPrivateKey {
             return NIOSSHSignature(backingSignature: .ecdsaP256(signature))
         #endif
         }
+    }
+
+    func selectingAuthenticationAlgorithm(_ name: Substring) -> Self {
+        var copy = self
+        copy.authenticationAlgorithmNameOverride = String(name)
+        return copy
     }
 
     func sign(_ payload: UserAuthSignablePayload) throws -> NIOSSHSignature {
@@ -176,7 +197,15 @@ extension NIOSSHPrivateKey {
             let signature = try key.signature(for: payload.bytes.readableBytesView)
             return NIOSSHSignature(backingSignature: .ecdsaP521(signature))
         case .custom(let key):
-            let signature = try key.signature(for: payload.bytes.readableBytesView)
+            let signature: NIOSSHSignatureProtocol
+            if let authenticationAlgorithmNameOverride {
+                signature = try key.signature(
+                    for: payload.bytes.readableBytesView,
+                    authenticationAlgorithmName: authenticationAlgorithmNameOverride
+                )
+            } else {
+                signature = try key.signature(for: payload.bytes.readableBytesView)
+            }
             return NIOSSHSignature(backingSignature: .custom(signature))
         #if canImport(Darwin)
         case .secureEnclaveP256(let key):

@@ -459,6 +459,63 @@ final class SSHConnectionStateMachineTests: XCTestCase {
         try self.assertTriggersNothing(.debug(.init(alwaysDisplay: true, message: "foo", language: "bar")), sender: &client, receiver: &server, allocator: allocator, loop: loop)
     }
 
+    func testServerSendsExtensionInfoBeforeUserAuthSuccess() throws {
+        let allocator = ByteBufferAllocator()
+        let loop = EmbeddedEventLoop()
+        let authDelegate = SignatureAlgorithmsRecordingPasswordDelegate()
+        var client = SSHConnectionStateMachine(role: .client(.init(
+            userAuthDelegate: authDelegate,
+            serverAuthDelegate: AcceptAllHostKeysDelegate()
+        )))
+        var server = SSHConnectionStateMachine(role: .server(.init(
+            hostKeys: [NIOSSHPrivateKey(ed25519Key: .init())],
+            userAuthDelegate: DenyThenAcceptDelegate(messagesToDeny: 0)
+        )))
+
+        try assertSuccessfulConnection(
+            client: &client,
+            server: &server,
+            allocator: allocator,
+            loop: loop
+        )
+
+        // RFC 8308 permits one EXT_INFO after NEWKEYS and a second immediately
+        // before USERAUTH_SUCCESS. Reaching active state proves the second was
+        // processed before success rather than arriving late in .active.
+        XCTAssertEqual(authDelegate.receivedAlgorithms.count, 2)
+        for algorithms in authDelegate.receivedAlgorithms {
+            XCTAssertTrue(algorithms.contains("ssh-ed25519-cert-v01@openssh.com"))
+            XCTAssertTrue(algorithms.contains("ecdsa-sha2-nistp256-cert-v01@openssh.com"))
+        }
+    }
+
+    func testServerCannotSendExtensionInfoAfterAuthentication() throws {
+        let allocator = ByteBufferAllocator()
+        let loop = EmbeddedEventLoop()
+        var client = SSHConnectionStateMachine(role: .client(.init(
+            userAuthDelegate: InfinitePasswordDelegate(),
+            serverAuthDelegate: AcceptAllHostKeysDelegate()
+        )))
+        var server = SSHConnectionStateMachine(role: .server(.init(
+            hostKeys: [NIOSSHPrivateKey(ed25519Key: .init())],
+            userAuthDelegate: DenyThenAcceptDelegate(messagesToDeny: 1)
+        )))
+
+        try assertSuccessfulConnection(
+            client: &client,
+            server: &server,
+            allocator: allocator,
+            loop: loop
+        )
+
+        try self.assertSendingIsProtocolError(
+            .extensionInfo(.serverSignatureAlgorithms(["ssh-rsa"])),
+            sender: &server,
+            allocator: allocator,
+            loop: loop
+        )
+    }
+
     func testUnimplementedGivesARichError() throws {
         let allocator = ByteBufferAllocator()
         let loop = EmbeddedEventLoop()

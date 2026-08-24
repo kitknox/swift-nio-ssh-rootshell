@@ -74,12 +74,14 @@ struct SSHKeyExchangeStateMachine {
     private var transportProtectionSchemes: [NIOSSHTransportProtection.Type]
     private var keyExchangeAlgorithms: [NIOSSHKeyExchangeAlgorithmProtocol.Type]
     private var previousSessionIdentifier: ByteBuffer?
+    private(set) var peerRequestedExtensionInfo = false
     private let remoteVersion: String
     private static let routerOSVersionPrefix = "SSH-2.0-ROSSSH"
     private static let routerOSKeyExchangeAlgorithms: Set<Substring> = [
         Substring("curve25519-sha256"),
         Substring("curve25519-sha256@libssh.org"),
     ]
+    private static let clientExtensionInfoMarker: Substring = "ext-info-c"
 
     /// - Parameter localVersion: Defaults to `Constants.version`; tests may override this to model a peer with a different banner in exchange hash construction.
     init(allocator: ByteBufferAllocator, loop: EventLoop, role: SSHConnectionRole, remoteVersion: String, keyExchangeAlgorithms: [NIOSSHKeyExchangeAlgorithmProtocol.Type], transportProtectionSchemes: [NIOSSHTransportProtection.Type], previousSessionIdentifier: ByteBuffer?, localVersion: String = Constants.version) {
@@ -129,19 +131,22 @@ struct SSHKeyExchangeStateMachine {
 
     private var keyExchangeAlgorithmProposal: [Substring] {
         // RouterOS ROSSSH can stop responding when the client KEXINIT offers too many KEX algorithms.
-        guard self.role.isClient, self.isRouterOSPeer else {
+        if self.role.isClient, self.isRouterOSPeer {
+            let routerOSAlgorithms = self.role.keyExchangeAlgorithmNames.filter {
+                Self.routerOSKeyExchangeAlgorithms.contains($0)
+            }
+            if !routerOSAlgorithms.isEmpty {
+                NIOSSHTrace.event("KEX using RouterOS compact proposal for remoteVersion=\(self.remoteVersion)")
+                return routerOSAlgorithms
+            }
+
+            NIOSSHTrace.event("KEX RouterOS compact proposal unavailable; Curve25519 algorithms are not configured")
             return self.role.keyExchangeAlgorithmNames
         }
 
-        let routerOSAlgorithms = self.role.keyExchangeAlgorithmNames.filter {
-            Self.routerOSKeyExchangeAlgorithms.contains($0)
+        if self.role.isClient, self.previousSessionIdentifier == nil {
+            return self.role.keyExchangeAlgorithmNames + [Self.clientExtensionInfoMarker]
         }
-        if !routerOSAlgorithms.isEmpty {
-            NIOSSHTrace.event("KEX using RouterOS compact proposal for remoteVersion=\(self.remoteVersion)")
-            return routerOSAlgorithms
-        }
-
-        NIOSSHTrace.event("KEX RouterOS compact proposal unavailable; Curve25519 algorithms are not configured")
         return self.role.keyExchangeAlgorithmNames
     }
 
@@ -150,6 +155,12 @@ struct SSHKeyExchangeStateMachine {
     }
 
     mutating func handle(keyExchange message: SSHMessage.KeyExchangeMessage) throws -> SSHMultiMessage? {
+        if self.role.isServer,
+           self.previousSessionIdentifier == nil,
+           message.keyExchangeAlgorithms.contains(Self.clientExtensionInfoMarker) {
+            self.peerRequestedExtensionInfo = true
+        }
+
         switch self.state {
         case .keyExchangeSent(message: let ourMessage):
             switch self.role {
@@ -293,12 +304,20 @@ struct SSHKeyExchangeStateMachine {
         case .keyExchangeInitSent(exchange: var exchanger, negotiated: let negotiated):
             switch self.role {
             case .client:
-                guard message.hostKey.keyPrefix.elementsEqual(negotiated.negotiatedHostKeyAlgorithm.utf8) else {
+                guard message.hostKey.isValidAuthenticationAlgorithmName(
+                    negotiated.negotiatedHostKeyAlgorithm.utf8
+                ) else {
                     let expected = String(negotiated.negotiatedHostKeyAlgorithm)
                     let got = String(decoding: message.hostKey.keyPrefix, as: UTF8.self)
                     NIOSSHTrace.event("KEX host key alg mismatch expected=\(expected) got=\(got)")
                     throw NIOSSHError.invalidHostKeyForKeyExchange(expected: negotiated.negotiatedHostKeyAlgorithm,
                                                                    got: message.hostKey.keyPrefix)
+                }
+                guard message.signature.matches(
+                    authenticationAlgorithmName: String(negotiated.negotiatedHostKeyAlgorithm),
+                    publicKey: message.hostKey
+                ) else {
+                    throw NIOSSHError.invalidExchangeHashSignature
                 }
                 NIOSSHTrace.event("KEX deriving shared secret + verifying server signature")
 
@@ -670,11 +689,28 @@ extension SSHKeyExchangeStateMachine {
     ]
 
     static var supportedServerHostKeyAlgorithms: [Substring] {
-        let preferredAlgorithms = NIOSSHPublicKey.preferredPublicKeyAlgorithms.map { Substring($0.publicKeyPrefix) }
-        let bundledAlgorithms = bundledServerHostKeyAlgorithms
-        let customAlgorithms = NIOSSHPublicKey.customPublicKeyAlgorithms.map { Substring($0.publicKeyPrefix) }
+        func algorithms(
+            from registrations: [CustomPublicKeyRegistration]
+        ) -> [Substring] {
+            registrations.flatMap { registration in
+                let validNames = [
+                    registration.publicKey.authAlgorithmName,
+                    registration.publicKey.publicKeyPrefix,
+                ]
+                return registration.signatures.compactMap { signature in
+                    validNames.contains(signature.signaturePrefix)
+                        ? Substring(signature.signaturePrefix)
+                        : nil
+                }
+            }
+        }
 
-        return preferredAlgorithms + bundledAlgorithms + customAlgorithms
+        var seen = Set<Substring>()
+        return (
+            algorithms(from: NIOSSHPublicKey.preferredPublicKeyRegistrations)
+                + bundledServerHostKeyAlgorithms
+                + algorithms(from: NIOSSHPublicKey.customPublicKeyRegistrations)
+        ).filter { seen.insert($0).inserted }
     }
 }
 
@@ -692,6 +728,7 @@ extension SSHKeyExchangeStateMachine {
             // This force-unwrap is safe: to fail to obtain it is a programming error, as we must have negotiated
             // the host key algorithm.
             keys.first { $0.hostKeyAlgorithms.contains(self.negotiatedHostKeyAlgorithm) }!
+                .selectingAuthenticationAlgorithm(self.negotiatedHostKeyAlgorithm)
         }
     }
 

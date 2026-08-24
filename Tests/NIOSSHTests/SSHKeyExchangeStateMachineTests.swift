@@ -132,7 +132,7 @@ final class SSHKeyExchangeStateMachineTests: XCTestCase {
         }
     }
 
-    func testClientKeyExchangeProposalUnchangedForNonRouterOSServers() throws {
+    func testClientKeyExchangeProposalRequestsExtensionInfoForNonRouterOSServers() throws {
         let allocator = ByteBufferAllocator()
         let loop = EmbeddedEventLoop()
         let clientConfig = SSHClientConfiguration(userAuthDelegate: ExplodingAuthDelegate(), serverAuthDelegate: AcceptAllHostKeysDelegate())
@@ -147,7 +147,64 @@ final class SSHKeyExchangeStateMachineTests: XCTestCase {
         )
 
         let message = client.createKeyExchangeMessage()
-        XCTAssertEqual(message.keyExchangeAlgorithms, SSHConnectionRole.client(clientConfig).keyExchangeAlgorithmNames)
+        XCTAssertEqual(
+            message.keyExchangeAlgorithms,
+            SSHConnectionRole.client(clientConfig).keyExchangeAlgorithmNames + ["ext-info-c"]
+        )
+    }
+
+    func testClientRekeyProposalDoesNotRequestExtensionInfo() throws {
+        let allocator = ByteBufferAllocator()
+        let loop = EmbeddedEventLoop()
+        let clientConfig = SSHClientConfiguration(
+            userAuthDelegate: ExplodingAuthDelegate(),
+            serverAuthDelegate: AcceptAllHostKeysDelegate()
+        )
+        var sessionIdentifier = allocator.buffer(capacity: 32)
+        sessionIdentifier.writeRepeatingByte(0, count: 32)
+        let client = SSHKeyExchangeStateMachine(
+            allocator: allocator,
+            loop: loop,
+            role: .client(clientConfig),
+            remoteVersion: "SSH-2.0-OpenSSH_8.5",
+            keyExchangeAlgorithms: SSHKeyExchangeStateMachine.bundledKeyExchangeImplementations,
+            transportProtectionSchemes: [AES256GCMOpenSSHTransportProtection.self],
+            previousSessionIdentifier: sessionIdentifier
+        )
+
+        let message = client.createKeyExchangeMessage()
+        XCTAssertEqual(
+            message.keyExchangeAlgorithms,
+            SSHConnectionRole.client(clientConfig).keyExchangeAlgorithmNames
+        )
+        XCTAssertFalse(message.keyExchangeAlgorithms.contains("ext-info-c"))
+    }
+
+    func testServerIgnoresExtensionInfoMarkerDuringRekey() throws {
+        let allocator = ByteBufferAllocator()
+        let loop = EmbeddedEventLoop()
+        var sessionIdentifier = allocator.buffer(capacity: 32)
+        sessionIdentifier.writeRepeatingByte(0, count: 32)
+        var server = SSHKeyExchangeStateMachine(
+            allocator: allocator,
+            loop: loop,
+            role: .server(.init(
+                hostKeys: [.init(ed25519Key: .init())],
+                userAuthDelegate: DenyAllServerAuthDelegate()
+            )),
+            remoteVersion: "SSH-2.0-OpenSSH_8.5",
+            keyExchangeAlgorithms: SSHKeyExchangeStateMachine.bundledKeyExchangeImplementations,
+            transportProtectionSchemes: [AES256GCMOpenSSHTransportProtection.self],
+            previousSessionIdentifier: sessionIdentifier
+        )
+        var clientMessage = server.createKeyExchangeMessage()
+        clientMessage.keyExchangeAlgorithms.append("ext-info-c")
+
+        let serverMessage = server.createKeyExchangeMessage()
+        server.send(keyExchange: serverMessage)
+        try self.assertGeneratesNoMessage(server.handle(keyExchange: clientMessage))
+
+        XCTAssertFalse(server.peerRequestedExtensionInfo)
     }
 
     func testClientDoesNotAdvertiseHostCertificateAlgorithmsByDefault() throws {

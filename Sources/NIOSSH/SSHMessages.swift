@@ -29,6 +29,7 @@ enum SSHMessage: Equatable {
     case debug(DebugMessage)
     case serviceRequest(ServiceRequestMessage)
     case serviceAccept(ServiceAcceptMessage)
+    case extensionInfo(ExtensionInfoMessage)
     case keyExchange(KeyExchangeMessage)
     case keyExchangeInit(KeyExchangeECDHInitMessage)
     case keyExchangeReply(KeyExchangeECDHReplyMessage)
@@ -97,6 +98,34 @@ extension SSHMessage {
         static let id: UInt8 = 6
 
         var service: String
+    }
+
+    struct ExtensionInfoMessage: Equatable {
+        static let id: UInt8 = 7
+
+        struct Extension: Equatable {
+            var name: String
+            var value: ByteBuffer
+        }
+
+        var extensions: [Extension]
+
+        var serverSignatureAlgorithms: [String]? {
+            guard let value = extensions.first(where: { $0.name == "server-sig-algs" })?.value else {
+                return nil
+            }
+            return String(decoding: value.readableBytesView, as: UTF8.self)
+                .split(separator: ",")
+                .map(String.init)
+        }
+
+        static func serverSignatureAlgorithms(_ algorithms: [Substring]) -> Self {
+            var value = ByteBuffer()
+            value.writeString(algorithms.joined(separator: ","))
+            return .init(extensions: [
+                .init(name: "server-sig-algs", value: value),
+            ])
+        }
     }
 
     struct KeyExchangeMessage: Equatable {
@@ -173,12 +202,26 @@ extension SSHMessage {
         var username: String
         var service: String
         var method: Method
+        /// Exact algorithm name carried by a parsed public-key request.
+        /// Outgoing requests derive it from the offered public key.
+        var publicKeyAlgorithmName: String? = nil
         var signingPrivateKey: NIOSSHPrivateKey? = nil
+
+        private var effectivePublicKeyAlgorithmName: String? {
+            if let publicKeyAlgorithmName {
+                return publicKeyAlgorithmName
+            }
+            guard case .publicKey(.known(let key, _)) = self.method else {
+                return nil
+            }
+            return String(key.authAlgorithmName)
+        }
 
         static func == (lhs: UserAuthRequestMessage, rhs: UserAuthRequestMessage) -> Bool {
             lhs.username == rhs.username &&
                 lhs.service == rhs.service &&
-                lhs.method == rhs.method
+                lhs.method == rhs.method &&
+                lhs.effectivePublicKeyAlgorithmName == rhs.effectivePublicKeyAlgorithmName
         }
     }
 
@@ -209,6 +252,8 @@ extension SSHMessage {
         // SSH_MSG_USERAUTH_PK_OK
         static let id: UInt8 = 60
 
+        /// The algorithm name exactly as it appeared in the public-key probe.
+        var publicKeyAlgorithmName: String
         var key: NIOSSHPublicKey
     }
 
@@ -480,6 +525,11 @@ extension ByteBuffer {
                     return nil
                 }
                 return .serviceAccept(message)
+            case SSHMessage.ExtensionInfoMessage.id:
+                guard let message = self.readExtensionInfoMessage() else {
+                    return nil
+                }
+                return .extensionInfo(message)
             case SSHMessage.KeyExchangeMessage.id:
                 guard let message = self.readKeyExchangeMessage() else {
                     return nil
@@ -671,6 +721,28 @@ extension ByteBuffer {
         }
     }
 
+    mutating func readExtensionInfoMessage() -> SSHMessage.ExtensionInfoMessage? {
+        self.rewindReaderOnNil { `self` in
+            guard let count = self.readInteger(as: UInt32.self),
+                  count <= UInt32(self.readableBytes / 8)
+            else {
+                return nil
+            }
+
+            var extensions: [SSHMessage.ExtensionInfoMessage.Extension] = []
+            extensions.reserveCapacity(Int(count))
+            for _ in 0..<count {
+                guard let name = self.readSSHStringAsString(),
+                      let value = self.readSSHString()
+                else {
+                    return nil
+                }
+                extensions.append(.init(name: name, value: value))
+            }
+            return .init(extensions: extensions)
+        }
+    }
+
     mutating func readKeyExchangeMessage() -> SSHMessage.KeyExchangeMessage? {
         self.rewindReaderOnNil { `self` in
             guard
@@ -755,6 +827,7 @@ extension ByteBuffer {
             }
 
             let method: SSHMessage.UserAuthRequestMessage.Method
+            var publicKeyAlgorithmName: String?
             switch methodRawValue {
             case "none":
                 method = .none
@@ -775,8 +848,10 @@ extension ByteBuffer {
                 else {
                     return nil
                 }
+                let parsedAlgorithmName = String(decoding: algorithmName.readableBytesView, as: UTF8.self)
 
                 if NIOSSHPublicKey.knownAlgorithms.contains(where: { $0.elementsEqual(algorithmName.readableBytesView) }) {
+                    publicKeyAlgorithmName = parsedAlgorithmName
                     // This is a known algorithm, we can load the key.
                     guard let publicKey = try keyBytes.readSSHHostKey() else {
                         return nil
@@ -817,7 +892,12 @@ extension ByteBuffer {
                 return nil
             }
 
-            return SSHMessage.UserAuthRequestMessage(username: username, service: service, method: method)
+            return SSHMessage.UserAuthRequestMessage(
+                username: username,
+                service: service,
+                method: method,
+                publicKeyAlgorithmName: publicKeyAlgorithmName
+            )
         }
     }
 
@@ -868,7 +948,10 @@ extension ByteBuffer {
                 throw NIOSSHError.invalidSSHMessage(reason: "inconsistent key type")
             }
 
-            return .init(key: publicKey)
+            return .init(
+                publicKeyAlgorithmName: String(decoding: publicKeyType.readableBytesView, as: UTF8.self),
+                key: publicKey
+            )
         }
     }
 
@@ -1314,6 +1397,9 @@ extension ByteBuffer {
         case .serviceAccept(let message):
             writtenBytes += self.writeInteger(SSHMessage.ServiceAcceptMessage.id)
             writtenBytes += self.writeServiceAcceptMessage(message)
+        case .extensionInfo(let message):
+            writtenBytes += self.writeInteger(SSHMessage.ExtensionInfoMessage.id)
+            writtenBytes += self.writeExtensionInfoMessage(message)
         case .keyExchange(let message):
             writtenBytes += self.writeInteger(SSHMessage.KeyExchangeMessage.id)
             writtenBytes += self.writeKeyExchangeMessage(message)
@@ -1424,6 +1510,16 @@ extension ByteBuffer {
         self.writeSSHString(message.service.utf8)
     }
 
+    mutating func writeExtensionInfoMessage(_ message: SSHMessage.ExtensionInfoMessage) -> Int {
+        var writtenBytes = self.writeInteger(UInt32(message.extensions.count))
+        for entry in message.extensions {
+            writtenBytes += self.writeSSHString(entry.name.utf8)
+            var value = entry.value
+            writtenBytes += self.writeSSHString(&value)
+        }
+        return writtenBytes
+    }
+
     mutating func writeKeyExchangeMessage(_ message: SSHMessage.KeyExchangeMessage) -> Int {
         var message = message
         var writtenBytes = 0
@@ -1481,7 +1577,11 @@ extension ByteBuffer {
         case .publicKey(.known(key: let key, signature: let signature)):
             writtenBytes += self.writeSSHString("publickey".utf8)
             writtenBytes += self.writeSSHBoolean(signature != nil)
-            writtenBytes += self.writeSSHString(key.authAlgorithmName)
+            if let algorithmName = message.publicKeyAlgorithmName {
+                writtenBytes += self.writeSSHString(algorithmName.utf8)
+            } else {
+                writtenBytes += self.writeSSHString(key.authAlgorithmName)
+            }
             writtenBytes += self.writeCompositeSSHString { buffer in
                 buffer.writeSSHHostKey(key)
             }
@@ -1541,7 +1641,7 @@ extension ByteBuffer {
 
     mutating func writeUserAuthPKOKMessage(_ message: SSHMessage.UserAuthPKOKMessage) -> Int {
         var writtenBytes = 0
-        writtenBytes += self.writeSSHString(message.key.keyPrefix)
+        writtenBytes += self.writeSSHString(message.publicKeyAlgorithmName.utf8)
         writtenBytes += self.writeCompositeSSHString { buffer in
             buffer.writeSSHHostKey(message.key)
         }

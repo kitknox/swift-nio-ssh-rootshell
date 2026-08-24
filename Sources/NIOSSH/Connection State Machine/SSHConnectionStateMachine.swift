@@ -84,6 +84,7 @@ struct SSHConnectionStateMachine {
         var negotiatedHostKeyAlgorithm: String? = nil
         var negotiatedCipherAlgorithm: String? = nil
         var negotiatedMacAlgorithm: String? = nil
+        var peerRequestedExtensionInfo = false
     }
     
     /// The state of this state machine.
@@ -331,6 +332,11 @@ struct SSHConnectionStateMachine {
             NIOSSHTrace.inbound(message, state: self.state.traceName)
 
             switch message {
+            case .extensionInfo(let message):
+                try state.userAuthStateMachine.receiveExtensionInfo(message)
+                self.state = .receivedNewKeys(state)
+                return .noMessage
+
             case .serviceRequest(let message):
                 let result = try state.receiveServiceRequest(message)
                 self.state = .receivedNewKeys(state)
@@ -364,6 +370,11 @@ struct SSHConnectionStateMachine {
             NIOSSHTrace.inbound(message, state: self.state.traceName)
 
             switch message {
+            case .extensionInfo(let message):
+                try state.userAuthStateMachine.receiveExtensionInfo(message)
+                self.state = .userAuthentication(state)
+                return .noMessage
+
             case .serviceRequest(let message):
                 let result = try state.receiveServiceRequest(message)
                 self.state = .userAuthentication(state)
@@ -824,8 +835,18 @@ struct SSHConnectionStateMachine {
                 self.state = .keyExchange(kex)
             case .newKeys:
                 self.captureNegotiatedAlgorithms(from: kex.keyExchangeStateMachine)
+                self.attributes.peerRequestedExtensionInfo = kex.keyExchangeStateMachine.peerRequestedExtensionInfo
                 try kex.writeNewKeysMessage(into: &buffer)
-                let newState = SentNewKeysState(keyExchangeState: kex, loop: loop)
+                var newState = SentNewKeysState(keyExchangeState: kex, loop: loop)
+                if newState.role.isServer,
+                   kex.keyExchangeStateMachine.peerRequestedExtensionInfo {
+                    try newState.serializer.serialize(
+                        message: .extensionInfo(.serverSignatureAlgorithms(
+                            NIOSSHPublicKey.supportedUserAuthenticationAlgorithms
+                        )),
+                        to: &buffer
+                    )
+                }
                 let possibleMessage = newState.userAuthStateMachine.beginAuthentication()
                 self.state = .sentNewKeys(newState)
 
@@ -859,9 +880,19 @@ struct SSHConnectionStateMachine {
                 self.state = .receivedNewKeys(kex)
             case .newKeys:
                 self.captureNegotiatedAlgorithms(from: kex.keyExchangeStateMachine)
+                self.attributes.peerRequestedExtensionInfo = kex.keyExchangeStateMachine.peerRequestedExtensionInfo
                 try kex.writeNewKeysMessage(into: &buffer)
 
-                let newState = UserAuthenticationState(receivedNewKeysState: kex)
+                var newState = UserAuthenticationState(receivedNewKeysState: kex)
+                if newState.role.isServer,
+                   kex.keyExchangeStateMachine.peerRequestedExtensionInfo {
+                    try newState.serializer.serialize(
+                        message: .extensionInfo(.serverSignatureAlgorithms(
+                            NIOSSHPublicKey.supportedUserAuthenticationAlgorithms
+                        )),
+                        to: &buffer
+                    )
+                }
                 let possibleMessage = newState.userAuthStateMachine.beginAuthentication()
                 self.state = .userAuthentication(newState)
 
@@ -932,6 +963,14 @@ struct SSHConnectionStateMachine {
                 self.state = .userAuthentication(state)
 
             case .userAuthSuccess:
+                if state.role.isServer, self.attributes.peerRequestedExtensionInfo {
+                    try state.serializer.serialize(
+                        message: .extensionInfo(.serverSignatureAlgorithms(
+                            NIOSSHPublicKey.supportedUserAuthenticationAlgorithms
+                        )),
+                        to: &buffer
+                    )
+                }
                 try state.writeUserAuthSuccess(into: &buffer)
                 // Ok we're good to go!
                 self.state = .active(ActiveState(state))

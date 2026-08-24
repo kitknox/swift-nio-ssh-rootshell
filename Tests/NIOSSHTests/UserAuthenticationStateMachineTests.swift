@@ -47,6 +47,40 @@ final class InfinitePasswordDelegate: NIOSSHClientUserAuthenticationDelegate {
     }
 }
 
+final class SignatureAlgorithmsRecordingDelegate: NIOSSHClientUserAuthenticationDelegate {
+    var algorithms: [String]?
+
+    func serverSignatureAlgorithmsReceived(_ algorithms: [String]) {
+        self.algorithms = algorithms
+    }
+
+    func nextAuthenticationType(
+        availableMethods: NIOSSHAvailableUserAuthenticationMethods,
+        nextChallengePromise: EventLoopPromise<NIOSSHUserAuthenticationOffer?>
+    ) {
+        nextChallengePromise.succeed(nil)
+    }
+}
+
+final class SignatureAlgorithmsRecordingPasswordDelegate: NIOSSHClientUserAuthenticationDelegate {
+    var receivedAlgorithms: [[String]] = []
+
+    func serverSignatureAlgorithmsReceived(_ algorithms: [String]) {
+        self.receivedAlgorithms.append(algorithms)
+    }
+
+    func nextAuthenticationType(
+        availableMethods: NIOSSHAvailableUserAuthenticationMethods,
+        nextChallengePromise: EventLoopPromise<NIOSSHUserAuthenticationOffer?>
+    ) {
+        nextChallengePromise.succeed(NIOSSHUserAuthenticationOffer(
+            username: "foo",
+            serviceName: "",
+            offer: .password(.init(password: "bar"))
+        ))
+    }
+}
+
 final class InfinitePrivateKeyDelegate: NIOSSHClientUserAuthenticationDelegate {
     let key = NIOSSHPrivateKey(p256Key: .init())
 
@@ -57,7 +91,11 @@ final class InfinitePrivateKeyDelegate: NIOSSHClientUserAuthenticationDelegate {
 }
 
 final class ProbeThenSignPrivateKeyDelegate: NIOSSHClientUserAuthenticationDelegate {
-    let key = NIOSSHPrivateKey(p256Key: .init())
+    let key: NIOSSHPrivateKey
+
+    init(key: NIOSSHPrivateKey = NIOSSHPrivateKey(p256Key: .init())) {
+        self.key = key
+    }
 
     func nextAuthenticationType(availableMethods: NIOSSHAvailableUserAuthenticationMethods, nextChallengePromise: EventLoopPromise<NIOSSHUserAuthenticationOffer?>) {
         let request = NIOSSHUserAuthenticationOffer(
@@ -190,6 +228,25 @@ final class UserAuthenticationStateMachineTests: XCTestCase {
         let expectedMessage = SSHMessage.ServiceRequestMessage(service: "ssh-userauth")
         let request: SSHMessage.ServiceRequestMessage? = try assertNoThrowWithValue(stateMachine.beginAuthentication())
         XCTAssertEqual(request, expectedMessage)
+    }
+
+    func testClientReceivesServerSignatureAlgorithms() throws {
+        let delegate = SignatureAlgorithmsRecordingDelegate()
+        var stateMachine = UserAuthenticationStateMachine(
+            role: .client(.init(
+                userAuthDelegate: delegate,
+                serverAuthDelegate: AcceptAllHostKeysDelegate()
+            )),
+            loop: self.loop,
+            sessionID: self.sessionID
+        )
+
+        try stateMachine.receiveExtensionInfo(.serverSignatureAlgorithms([
+            "rsa-sha2-256",
+            "ssh-rsa",
+        ]))
+
+        XCTAssertEqual(delegate.algorithms, ["rsa-sha2-256", "ssh-rsa"])
     }
 
     func serviceRequested(service: String, nextMessage expectedMessage: SSHMessage.ServiceAcceptMessage?, stateMachine: inout UserAuthenticationStateMachine) throws {
@@ -770,7 +827,10 @@ final class UserAuthenticationStateMachineTests: XCTestCase {
 
         // User first issues a private key query. We auto-accept this, it doesn't affect the delegate.
         let query = SSHMessage.UserAuthRequestMessage(username: "foo", service: "ssh-connection", method: .publicKey(.known(key: self.hostKey.publicKey, signature: nil)))
-        let response = SSHMessage.UserAuthPKOKMessage(key: self.hostKey.publicKey)
+        let response = SSHMessage.UserAuthPKOKMessage(
+            publicKeyAlgorithmName: String(decoding: self.hostKey.publicKey.authAlgorithmName, as: UTF8.self),
+            key: self.hostKey.publicKey
+        )
         try self.expectAuthRequestToReturnPKOKSynchronously(request: query, expecting: response, stateMachine: &stateMachine)
         stateMachine.sendUserAuthPKOK(response)
 
@@ -792,6 +852,42 @@ final class UserAuthenticationStateMachineTests: XCTestCase {
         stateMachine.sendUserAuthSuccess()
     }
 
+    func testPublicKeyProbeEchoesExactAuthenticationAlgorithmName() throws {
+        var stateMachine = UserAuthenticationStateMachine(
+            role: .server(.init(
+                hostKeys: [self.hostKey],
+                userAuthDelegate: DenyThenAcceptDelegate(messagesToDeny: 0)
+            )),
+            loop: self.loop,
+            sessionID: self.sessionID
+        )
+        let serviceAccept = SSHMessage.ServiceAcceptMessage(service: "ssh-userauth")
+        XCTAssertNoThrow(try self.serviceRequested(
+            service: "ssh-userauth",
+            nextMessage: serviceAccept,
+            stateMachine: &stateMachine
+        ))
+        stateMachine.sendServiceAccept(serviceAccept)
+
+        let rsaKey = NIOSSHPrivateKey(custom: RSAStylePrivateKey()).publicKey
+        let request = SSHMessage.UserAuthRequestMessage(
+            username: "foo",
+            service: "ssh-connection",
+            method: .publicKey(.known(key: rsaKey, signature: nil)),
+            publicKeyAlgorithmName: "rsa-sha2-256"
+        )
+        let response = SSHMessage.UserAuthPKOKMessage(
+            publicKeyAlgorithmName: "rsa-sha2-256",
+            key: rsaKey
+        )
+
+        try self.expectAuthRequestToReturnPKOKSynchronously(
+            request: request,
+            expecting: response,
+            stateMachine: &stateMachine
+        )
+    }
+
     func testServerPerformsValidationsOnSignatures() throws {
         var stateMachine = UserAuthenticationStateMachine(role: .server(.init(hostKeys: [self.hostKey], userAuthDelegate: DenyThenAcceptDelegate(messagesToDeny: 0))), loop: self.loop, sessionID: self.sessionID)
 
@@ -807,6 +903,47 @@ final class UserAuthenticationStateMachineTests: XCTestCase {
                                                       expecting: .init(authentications: NIOSSHAvailableUserAuthenticationMethods.all.strings, partialSuccess: false),
                                                       stateMachine: &stateMachine)
         stateMachine.sendUserAuthFailure(.init(authentications: NIOSSHAvailableUserAuthenticationMethods.all.strings, partialSuccess: false))
+    }
+
+    func testServerTreatsSignatureAlgorithmMismatchAsAuthenticationFailure() throws {
+        var stateMachine = UserAuthenticationStateMachine(
+            role: .server(.init(
+                hostKeys: [self.hostKey],
+                userAuthDelegate: DenyThenAcceptDelegate(messagesToDeny: 0)
+            )),
+            loop: self.loop,
+            sessionID: self.sessionID
+        )
+
+        let serviceAccept = SSHMessage.ServiceAcceptMessage(service: "ssh-userauth")
+        try self.serviceRequested(
+            service: "ssh-userauth",
+            nextMessage: serviceAccept,
+            stateMachine: &stateMachine
+        )
+        stateMachine.sendServiceAccept(serviceAccept)
+
+        let payload = UserAuthSignablePayload(
+            sessionIdentifier: self.sessionID,
+            userName: "foo",
+            serviceName: "ssh-connection",
+            publicKey: self.hostKey.publicKey
+        )
+        let signature = try self.hostKey.sign(payload)
+        let request = SSHMessage.UserAuthRequestMessage(
+            username: "foo",
+            service: "ssh-connection",
+            method: .publicKey(.known(key: self.hostKey.publicKey, signature: signature)),
+            publicKeyAlgorithmName: "ecdsa-sha2-nistp256"
+        )
+        try self.expectAuthRequestToFailSynchronously(
+            request: request,
+            expecting: .init(
+                authentications: NIOSSHAvailableUserAuthenticationMethods.all.strings,
+                partialSuccess: false
+            ),
+            stateMachine: &stateMachine
+        )
     }
 
     func testPrivateKeyClientAuthFlow() throws {
@@ -857,7 +994,10 @@ final class UserAuthenticationStateMachineTests: XCTestCase {
 
         stateMachine.sendUserAuthRequest(firstMessage!)
 
-        let signedMessage = try assertNoThrowWithValue(stateMachine.receiveUserAuthPKOK(.init(key: delegate.key.publicKey)))
+        let signedMessage = try assertNoThrowWithValue(stateMachine.receiveUserAuthPKOK(.init(
+            publicKeyAlgorithmName: String(decoding: delegate.key.publicKey.authAlgorithmName, as: UTF8.self),
+            key: delegate.key.publicKey
+        )))
         let dataToSign = UserAuthSignablePayload(sessionIdentifier: self.sessionID, userName: "foo", serviceName: "ssh-connection", publicKey: delegate.key.publicKey)
 
         guard case .publicKey(.known(let signedKey, let signature?)) = signedMessage.method else {
@@ -867,6 +1007,10 @@ final class UserAuthenticationStateMachineTests: XCTestCase {
 
         XCTAssertEqual(signedMessage.username, "foo")
         XCTAssertEqual(signedMessage.service, "ssh-connection")
+        XCTAssertEqual(
+            signedMessage.publicKeyAlgorithmName,
+            String(decoding: delegate.key.publicKey.authAlgorithmName, as: UTF8.self)
+        )
         XCTAssertEqual(signedKey, delegate.key.publicKey)
         XCTAssertTrue(delegate.key.publicKey.isValidSignature(signature, for: dataToSign))
 
@@ -896,9 +1040,83 @@ final class UserAuthenticationStateMachineTests: XCTestCase {
 
         stateMachine.sendUserAuthRequest(firstMessage!)
 
-        XCTAssertThrowsError(try stateMachine.receiveUserAuthPKOK(.init(key: otherKey.publicKey))) { error in
+        XCTAssertThrowsError(try stateMachine.receiveUserAuthPKOK(.init(
+            publicKeyAlgorithmName: String(decoding: delegate.key.publicKey.authAlgorithmName, as: UTF8.self),
+            key: otherKey.publicKey
+        ))) { error in
             XCTAssertEqual((error as? NIOSSHError)?.type, .protocolViolation)
         }
+    }
+
+    func testPrivateKeyClientAuthProbeThenSignRejectsMismatchedPKOKAlgorithm() throws {
+        let delegate = ProbeThenSignPrivateKeyDelegate()
+        var stateMachine = UserAuthenticationStateMachine(
+            role: .client(.init(
+                userAuthDelegate: delegate,
+                serverAuthDelegate: AcceptAllHostKeysDelegate()
+            )),
+            loop: self.loop,
+            sessionID: self.sessionID
+        )
+
+        XCTAssertNoThrow(try self.beginAuthentication(stateMachine: &stateMachine))
+        stateMachine.sendServiceRequest(.init(service: "ssh-userauth"))
+        var firstMessage: SSHMessage.UserAuthRequestMessage?
+        let future = try assertNoThrowWithValue(
+            stateMachine.receiveServiceAccept(.init(service: "ssh-userauth"))
+        )
+        future?.whenSuccess { firstMessage = $0 }
+        self.loop.run()
+        stateMachine.sendUserAuthRequest(try XCTUnwrap(firstMessage))
+
+        XCTAssertThrowsError(try stateMachine.receiveUserAuthPKOK(.init(
+            publicKeyAlgorithmName: "wrong-algorithm",
+            key: delegate.key.publicKey
+        ))) { error in
+            XCTAssertEqual((error as? NIOSSHError)?.type, .protocolViolation)
+        }
+    }
+
+    func testPrivateKeyClientAuthProbeThenSignAcceptsRSAKeyBlobAlgorithmEcho() throws {
+        let delegate = ProbeThenSignPrivateKeyDelegate(
+            key: NIOSSHPrivateKey(custom: RSAStylePrivateKey())
+        )
+        var stateMachine = UserAuthenticationStateMachine(
+            role: .client(.init(
+                userAuthDelegate: delegate,
+                serverAuthDelegate: AcceptAllHostKeysDelegate()
+            )),
+            loop: self.loop,
+            sessionID: self.sessionID
+        )
+
+        XCTAssertNoThrow(try self.beginAuthentication(stateMachine: &stateMachine))
+        stateMachine.sendServiceRequest(.init(service: "ssh-userauth"))
+        var probe: SSHMessage.UserAuthRequestMessage?
+        let future = try assertNoThrowWithValue(
+            stateMachine.receiveServiceAccept(.init(service: "ssh-userauth"))
+        )
+        future?.whenSuccess { probe = $0 }
+        self.loop.run()
+        stateMachine.sendUserAuthRequest(try XCTUnwrap(probe))
+
+        let signedRequest = try stateMachine.receiveUserAuthPKOK(.init(
+            publicKeyAlgorithmName: "ssh-rsa",
+            key: delegate.key.publicKey
+        ))
+
+        XCTAssertEqual(signedRequest.publicKeyAlgorithmName, "rsa-sha2-256")
+        guard case .publicKey(.known(let key, let signature?)) = signedRequest.method else {
+            return XCTFail("Expected a signed RSA public-key request")
+        }
+        let payload = UserAuthSignablePayload(
+            sessionIdentifier: self.sessionID,
+            userName: signedRequest.username,
+            serviceName: signedRequest.service,
+            publicKey: key,
+            authenticationAlgorithmName: "rsa-sha2-256"
+        )
+        XCTAssertTrue(key.isValidSignature(signature, for: payload))
     }
 
     func testPublicKeyOKAllowsRSAAuthenticationAlgorithmNameWithRSAKeyBlob() throws {
@@ -910,7 +1128,10 @@ final class UserAuthenticationStateMachineTests: XCTestCase {
         }
 
         let message = try buffer.readUserAuthPKOKMessage()
-        XCTAssertEqual(message, .init(key: key))
+        XCTAssertEqual(message, .init(
+            publicKeyAlgorithmName: String(decoding: key.authAlgorithmName, as: UTF8.self),
+            key: key
+        ))
     }
 
     func testSignedPublicKeyRequestAllowsRSAAuthenticationAlgorithmNameWithRSAKeyBlob() throws {

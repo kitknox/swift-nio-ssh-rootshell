@@ -377,6 +377,7 @@ final class CustomKeyCertificateTests: XCTestCase {
 
     func testKnownAlgorithmsIncludeCertificateNames() {
         let known = NIOSSHPublicKey.knownAlgorithms.map { String($0) }
+        let advertised = NIOSSHPublicKey.supportedUserAuthenticationAlgorithms.map(String.init)
         // Built-in certificate names.
         XCTAssertTrue(known.contains("ssh-ed25519-cert-v01@openssh.com"))
         XCTAssertTrue(known.contains("ecdsa-sha2-nistp256-cert-v01@openssh.com"))
@@ -387,6 +388,122 @@ final class CustomKeyCertificateTests: XCTestCase {
         XCTAssertTrue(known.contains("rsa-sha2-256-cert-v01@openssh.com"))
         XCTAssertTrue(known.contains("sk-ecdsa-sha2-nistp256-cert-v01@openssh.com"))
         XCTAssertTrue(known.contains("sk-ssh-ed25519-cert-v01@openssh.com"))
+        XCTAssertEqual(advertised, known)
+    }
+
+    func testRSAAlgorithmsPreferSHA2OverLegacySHA1() throws {
+        NIOSSHAlgorithms.register(
+            publicKey: TestRSAPublicKey.self,
+            signature: LegacyStyleRSASignature.self
+        )
+        let known = NIOSSHPublicKey.knownAlgorithms.map { String($0) }
+        let hostKeyAlgorithms = SSHKeyExchangeStateMachine.supportedServerHostKeyAlgorithms
+            .map(String.init)
+
+        XCTAssertLessThan(
+            try XCTUnwrap(known.firstIndex(of: "rsa-sha2-256")),
+            try XCTUnwrap(known.firstIndex(of: "ssh-rsa"))
+        )
+        XCTAssertLessThan(
+            try XCTUnwrap(known.firstIndex(of: "rsa-sha2-256-cert-v01@openssh.com")),
+            try XCTUnwrap(known.firstIndex(of: "ssh-rsa-cert-v01@openssh.com"))
+        )
+        XCTAssertLessThan(
+            try XCTUnwrap(hostKeyAlgorithms.firstIndex(of: "rsa-sha2-256")),
+            try XCTUnwrap(hostKeyAlgorithms.firstIndex(of: "ssh-rsa"))
+        )
+    }
+
+    func testOnePublicKeyCanRegisterMultipleSignatureParsers() throws {
+        NIOSSHAlgorithms.unregisterAlgorithms()
+        NIOSSHAlgorithms.register(
+            publicKey: TestRSAPublicKey.self,
+            signatures: [
+                TestRSASignature.self,
+                LegacyStyleRSASignature.self,
+            ]
+        )
+
+        XCTAssertEqual(
+            NIOSSHPublicKey.customPublicKeyAlgorithms.filter {
+                ObjectIdentifier($0) == ObjectIdentifier(TestRSAPublicKey.self)
+            }.count,
+            1
+        )
+        XCTAssertEqual(
+            NIOSSHPublicKey.customSignatures.filter {
+                ObjectIdentifier($0) == ObjectIdentifier(TestRSASignature.self)
+                    || ObjectIdentifier($0) == ObjectIdentifier(LegacyStyleRSASignature.self)
+            }.count,
+            2
+        )
+
+        let key = NIOSSHPublicKey(
+            backingKey: .custom(
+                TestRSAPublicKey(e: Data([1, 0, 1]), n: Data(repeating: 7, count: 32))
+            )
+        )
+
+        var modernBuffer = ByteBufferAllocator().buffer(capacity: 64)
+        modernBuffer.writeSSHString(TestRSASignature.signaturePrefix.utf8)
+        modernBuffer.writeSSHString(Data([1, 2, 3]))
+        let modern = try XCTUnwrap(modernBuffer.readSSHSignature())
+        guard case .custom(let modernSignature) = modern.backingSignature else {
+            return XCTFail("Expected a custom modern RSA signature")
+        }
+        XCTAssertTrue(modernSignature is TestRSASignature)
+        XCTAssertTrue(modern.matches(authenticationAlgorithmName: "rsa-sha2-256", publicKey: key))
+        XCTAssertFalse(modern.matches(authenticationAlgorithmName: "ssh-rsa", publicKey: key))
+
+        var legacyBuffer = ByteBufferAllocator().buffer(capacity: 64)
+        legacyBuffer.writeSSHString(LegacyStyleRSASignature.signaturePrefix.utf8)
+        legacyBuffer.writeSSHString(Data([4, 5, 6]))
+        let legacy = try XCTUnwrap(legacyBuffer.readSSHSignature())
+        guard case .custom(let legacySignature) = legacy.backingSignature else {
+            return XCTFail("Expected a custom legacy RSA signature")
+        }
+        XCTAssertTrue(legacySignature is LegacyStyleRSASignature)
+        XCTAssertTrue(legacy.matches(authenticationAlgorithmName: "ssh-rsa", publicKey: key))
+        XCTAssertFalse(legacy.matches(authenticationAlgorithmName: "rsa-sha2-256", publicKey: key))
+    }
+
+    func testPreferredPublicKeyCanRegisterMultipleSignatureParsers() {
+        NIOSSHAlgorithms.unregisterAlgorithms()
+        NIOSSHAlgorithms.registerPreferred(
+            publicKey: TestRSAPublicKey.self,
+            signatures: [
+                TestRSASignature.self,
+                LegacyStyleRSASignature.self,
+            ]
+        )
+
+        XCTAssertEqual(NIOSSHPublicKey.preferredPublicKeyAlgorithms.count, 1)
+        XCTAssertEqual(NIOSSHPublicKey.preferredSignatures.count, 2)
+    }
+
+    func testSignatureAssociationCombinesPreferredAndRegularRegistrations() throws {
+        NIOSSHAlgorithms.unregisterAlgorithms()
+        NIOSSHAlgorithms.registerPreferred(
+            publicKey: TestRSAPublicKey.self,
+            signature: TestRSASignature.self
+        )
+        NIOSSHAlgorithms.register(
+            publicKey: TestRSAPublicKey.self,
+            signature: LegacyStyleRSASignature.self
+        )
+
+        let key = NIOSSHPublicKey(backingKey: .custom(
+            TestRSAPublicKey(e: Data([1, 0, 1]), n: Data(repeating: 7, count: 32))
+        ))
+        var signatureBuffer = ByteBufferAllocator().buffer(capacity: 64)
+        signatureBuffer.writeSSHString(LegacyStyleRSASignature.signaturePrefix.utf8)
+        signatureBuffer.writeSSHString(Data([1, 2, 3]))
+        let signature = try XCTUnwrap(signatureBuffer.readSSHSignature())
+
+        XCTAssertTrue(signature.matches(authenticationAlgorithmName: "ssh-rsa", publicKey: key))
+        XCTAssertTrue(
+            NIOSSHPublicKey.supportedUserAuthenticationAlgorithms.contains(Substring("ssh-rsa"))
+        )
     }
 
     func testPKOKRoundTripWithCertificate() throws {
@@ -402,6 +519,10 @@ final class CustomKeyCertificateTests: XCTestCase {
 
             let message = try buffer.readUserAuthPKOKMessage()
             XCTAssertEqual(message?.key, publicKey)
+            XCTAssertEqual(
+                message?.publicKeyAlgorithmName,
+                String(decoding: publicKey.authAlgorithmName, as: UTF8.self)
+            )
         }
     }
 
@@ -425,6 +546,77 @@ final class CustomKeyCertificateTests: XCTestCase {
         }
         XCTAssertEqual(parsedKey, publicKey)
         XCTAssertNotNil(NIOSSHCertifiedPublicKey(parsedKey))
+    }
+
+    func testUserAuthRequestPreservesSignatureAlgorithmMismatchForAuthenticationFailure() throws {
+        NIOSSHAlgorithms.register(
+            publicKey: TestRSAPublicKey.self,
+            signatures: [
+                TestRSASignature.self,
+                LegacyStyleRSASignature.self,
+            ]
+        )
+
+        let key = NIOSSHPublicKey(
+            backingKey: .custom(
+                TestRSAPublicKey(e: Data([1, 0, 1]), n: Data(repeating: 7, count: 32))
+            )
+        )
+        let modernSignature = NIOSSHSignature(
+            backingSignature: .custom(TestRSASignature(rawRepresentation: Data([1, 2, 3])))
+        )
+        let mislabeledRequest = SSHMessage.UserAuthRequestMessage(
+            username: "foo",
+            service: "ssh-connection",
+            method: .publicKey(.known(key: key, signature: modernSignature)),
+            publicKeyAlgorithmName: "ssh-rsa"
+        )
+
+        var buffer = ByteBufferAllocator().buffer(capacity: 256)
+        buffer.writeUserAuthRequestMessage(mislabeledRequest)
+
+        let parsed = try XCTUnwrap(buffer.readUserAuthRequestMessage())
+        XCTAssertEqual(parsed.publicKeyAlgorithmName, "ssh-rsa")
+        guard case .publicKey(.known(let parsedKey, let signature?)) = parsed.method else {
+            return XCTFail("Expected a parsed signed public-key request")
+        }
+        XCTAssertFalse(signature.matches(
+            authenticationAlgorithmName: "ssh-rsa",
+            publicKey: parsedKey
+        ))
+    }
+
+    func testVendorQualifiedSecurityKeyCertificateUsesRegisteredSignatureAssociation() throws {
+        let certificate = try NIOSSHCertifiedPublicKey(openSSHCertifiedPublicKey: Fixtures.skEcdsaUser)
+        let publicKey = NIOSSHPublicKey(certificate)
+        let signature = NIOSSHSignature(
+            backingSignature: .custom(TestSKEcdsaSignature(rawRepresentation: Data([1, 2, 3])))
+        )
+
+        XCTAssertTrue(signature.matches(
+            authenticationAlgorithmName: "sk-ecdsa-sha2-nistp256-cert-v01@openssh.com",
+            publicKey: publicKey
+        ))
+    }
+
+    func testSingleSignatureRegistrationStillRejectsMismatchedAlgorithmName() {
+        let publicKey = NIOSSHPublicKey(
+            backingKey: .custom(
+                TestRSAPublicKey(e: Data([1, 0, 1]), n: Data(repeating: 7, count: 32))
+            )
+        )
+        let signature = NIOSSHSignature(
+            backingSignature: .custom(TestRSASignature(rawRepresentation: Data([1, 2, 3])))
+        )
+
+        XCTAssertTrue(signature.matches(
+            authenticationAlgorithmName: "rsa-sha2-256",
+            publicKey: publicKey
+        ))
+        XCTAssertFalse(signature.matches(
+            authenticationAlgorithmName: "ssh-rsa",
+            publicKey: publicKey
+        ))
     }
 
     func testConstructionThrowsForUnsupportedCustomKey() throws {
@@ -473,5 +665,18 @@ final class CustomKeyCertificateTests: XCTestCase {
 
         // And the round trip stays byte-exact.
         XCTAssertEqual(String(openSSHPublicKey: NIOSSHPublicKey(cert)), self.expectedExport(for: Fixtures.rsaUser))
+    }
+
+    func testPlainKeyParsingTriesEveryParserSharingPrefix() throws {
+        NIOSSHAlgorithms.unregisterAlgorithms()
+        NIOSSHAlgorithms.register(publicKey: LegacyStyleRSAPublicKey.self, signature: LegacyStyleRSASignature.self)
+        NIOSSHAlgorithms.register(publicKey: TestRSAPublicKey.self, signature: TestRSASignature.self)
+
+        let key = try NIOSSHPublicKey(openSSHPublicKey: Fixtures.rsaUserBase)
+        guard case .custom(let parsed) = key.backingKey else {
+            XCTFail("Plain key is not custom")
+            return
+        }
+        XCTAssertTrue(parsed is TestRSAPublicKey)
     }
 }

@@ -49,6 +49,13 @@ public protocol NIOSSHPublicKeyProtocol {
     /// The returned value MUST NOT overlap with other public key implementations or a specifications that the public key does not implement.
     static var publicKeyPrefix: String { get }
 
+    /// The public key algorithm name advertised and used for authentication.
+    ///
+    /// This may differ from ``publicKeyPrefix`` when one key format supports
+    /// multiple signature algorithms, as RSA does with `rsa-sha2-256` and
+    /// the legacy `ssh-rsa` format. Defaults to ``publicKeyPrefix``.
+    static var authAlgorithmName: String { get }
+
     /// The OpenSSH certificate type name for this key type (e.g. `ssh-rsa-cert-v01@openssh.com`).
     ///
     /// When non-nil, ``NIOSSHCertifiedPublicKey`` can parse and serialize OpenSSH certificates whose
@@ -119,11 +126,33 @@ public protocol NIOSSHPrivateKeyProtocol {
     /// The returned value MUST NOT overlap with other private key implementations or a specifications that the private key does not implement.
     static var keyPrefix: String { get }
 
+    /// The public-key algorithm name used when authenticating with this key.
+    ///
+    /// This may differ from ``keyPrefix`` for key formats such as RSA, whose
+    /// modern signature algorithm is `rsa-sha2-256` while its key blob remains
+    /// `ssh-rsa`. Defaults to ``keyPrefix``.
+    static var authAlgorithmName: String { get }
+
+    /// Host-key algorithms this key can negotiate, in preference order.
+    /// Defaults to ``authAlgorithmName``. Keys that can sign with multiple
+    /// algorithms, such as RSA SHA-2 plus legacy RSA/SHA-1, must list each one
+    /// and implement ``signature(for:authenticationAlgorithmName:)``.
+    static var hostKeyAlgorithms: [String] { get }
+
     /// A public key instance that is able to verify signatures that are created using this private key.
     var publicKey: NIOSSHPublicKeyProtocol { get }
 
     /// Creates a signature, proving that `data` has been sent by the holder of this private key, and can be verified by `publicKey`.
     func signature<D: DataProtocol>(for data: D) throws -> NIOSSHSignatureProtocol
+
+    /// Creates a signature for a specific negotiated authentication
+    /// algorithm. Most key types have only one algorithm and use the default
+    /// implementation. RSA implementations can select SHA-2 or SHA-1 without
+    /// changing the public key blob.
+    func signature<D: DataProtocol>(
+        for data: D,
+        authenticationAlgorithmName: String
+    ) throws -> NIOSSHSignatureProtocol
 }
 
 public extension NIOSSHPrivateKeyProtocol {
@@ -131,6 +160,15 @@ public extension NIOSSHPrivateKeyProtocol {
     /// If not provided, defaults to keyPrefix.
     /// This is useful for RSA keys that use rsa-sha2-* signature algorithms while maintaining ssh-rsa key type.
     static var authAlgorithmName: String { keyPrefix }
+
+    static var hostKeyAlgorithms: [String] { [authAlgorithmName] }
+
+    func signature<D: DataProtocol>(
+        for data: D,
+        authenticationAlgorithmName _: String
+    ) throws -> NIOSSHSignatureProtocol {
+        try signature(for: data)
+    }
 }
 
 internal extension NIOSSHPrivateKeyProtocol {
@@ -140,5 +178,9 @@ internal extension NIOSSHPrivateKeyProtocol {
 
     var authAlgorithmName: String {
         Self.authAlgorithmName
+    }
+
+    var hostKeyAlgorithms: [String] {
+        Self.hostKeyAlgorithms
     }
 }

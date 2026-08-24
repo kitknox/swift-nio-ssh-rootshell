@@ -18,7 +18,72 @@ import NIOFoundationCompat
 @testable import NIOSSH
 import XCTest
 
+private struct NegotiatedHostPublicKey: NIOSSHPublicKeyProtocol {
+    static let publicKeyPrefix = "ssh-rsa"
+    static let authAlgorithmName = "rsa-sha2-256"
+    var rawRepresentation = Data()
+
+    func isValidSignature<D: DataProtocol>(
+        _ signature: NIOSSHSignatureProtocol,
+        for data: D
+    ) -> Bool { true }
+
+    func write(to buffer: inout ByteBuffer) -> Int { 0 }
+
+    static func read(from buffer: inout ByteBuffer) throws -> Self { .init() }
+}
+
+private struct ModernHostSignature: NIOSSHSignatureProtocol {
+    static let signaturePrefix = "rsa-sha2-256"
+    var rawRepresentation = Data()
+    func write(to buffer: inout ByteBuffer) -> Int { 0 }
+    static func read(from buffer: inout ByteBuffer) throws -> Self { .init() }
+}
+
+private struct LegacyHostSignature: NIOSSHSignatureProtocol {
+    static let signaturePrefix = "ssh-rsa"
+    var rawRepresentation = Data()
+    func write(to buffer: inout ByteBuffer) -> Int { 0 }
+    static func read(from buffer: inout ByteBuffer) throws -> Self { .init() }
+}
+
+private struct NegotiatedHostPrivateKey: NIOSSHPrivateKeyProtocol {
+    static let keyPrefix = "ssh-rsa"
+    static let authAlgorithmName = "rsa-sha2-256"
+    static let hostKeyAlgorithms = ["rsa-sha2-256", "ssh-rsa"]
+    var publicKey: NIOSSHPublicKeyProtocol { NegotiatedHostPublicKey() }
+
+    func signature<D: DataProtocol>(for data: D) throws -> NIOSSHSignatureProtocol {
+        ModernHostSignature()
+    }
+
+    func signature<D: DataProtocol>(
+        for data: D,
+        authenticationAlgorithmName: String
+    ) throws -> NIOSSHSignatureProtocol {
+        authenticationAlgorithmName == "ssh-rsa"
+            ? LegacyHostSignature()
+            : ModernHostSignature()
+    }
+}
+
 final class HostKeyTests: XCTestCase {
+    func testCustomHostKeySignsWithNegotiatedAlgorithm() throws {
+        let key = NIOSSHPrivateKey(custom: NegotiatedHostPrivateKey())
+        XCTAssertEqual(key.hostKeyAlgorithms, ["rsa-sha2-256", "ssh-rsa"])
+
+        let digest = SHA256.hash(data: Data("host exchange".utf8))
+        let modern = try key
+            .selectingAuthenticationAlgorithm("rsa-sha2-256")
+            .sign(digest: digest)
+        let legacy = try key
+            .selectingAuthenticationAlgorithm("ssh-rsa")
+            .sign(digest: digest)
+
+        XCTAssertEqual(String(modern.algorithmName), "rsa-sha2-256")
+        XCTAssertEqual(String(legacy.algorithmName), "ssh-rsa")
+    }
+
     func testBasicEd25519SigningFlow() throws {
         let edKey = Curve25519.Signing.PrivateKey()
         let sshKey = NIOSSHPrivateKey(ed25519Key: edKey)

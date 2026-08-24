@@ -30,6 +30,48 @@ public struct NIOSSHSignature: Hashable {
 }
 
 extension NIOSSHSignature {
+    /// The signature algorithm identifier carried on the wire.
+    internal var algorithmName: String.UTF8View {
+        switch self.backingSignature {
+        case .ed25519:
+            return Self.ed25519SignaturePrefix
+        case .ecdsaP256:
+            return Self.ecdsaP256SignaturePrefix
+        case .ecdsaP384:
+            return Self.ecdsaP384SignaturePrefix
+        case .ecdsaP521:
+            return Self.ecdsaP521SignaturePrefix
+        case .custom(let signature):
+            return signature.signaturePrefix.utf8
+        }
+    }
+
+    /// Binds a parsed signature to the algorithm negotiated by KEX or named
+    /// by a user-auth request. Certificate algorithm names use the underlying
+    /// key's signature name on the wire.
+    internal func matches(
+        authenticationAlgorithmName: String,
+        publicKey: NIOSSHPublicKey
+    ) -> Bool {
+        if case .custom(let signature) = self.backingSignature {
+            return publicKey.matchesRegisteredSignature(
+                signature,
+                authenticationAlgorithmName: authenticationAlgorithmName
+            )
+        }
+
+        let certificateSuffix = "-cert-v01@openssh.com"
+        let signatureAlgorithmName: Substring
+        if authenticationAlgorithmName.hasSuffix(certificateSuffix) {
+            signatureAlgorithmName = authenticationAlgorithmName.dropLast(certificateSuffix.count)
+        } else {
+            signatureAlgorithmName = Substring(authenticationAlgorithmName)
+        }
+        return self.algorithmName.elementsEqual(signatureAlgorithmName.utf8)
+    }
+}
+
+extension NIOSSHSignature {
     /// The various signature types that can be used with NIOSSH.
     internal enum BackingSignature {
         case ed25519(RawBytes) // There is no structured Signature type for Curve25519, and we may want Data or ByteBuffer.
