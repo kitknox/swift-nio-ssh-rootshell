@@ -75,6 +75,15 @@ public protocol NIOSSHPublicKeyProtocol {
     /// names the SHA-2 cert algorithm.
     static var certifiedAuthAlgorithmName: String? { get }
 
+    /// Restricts default host-key proposals to these signature names. `nil`
+    /// permits all registered matching signatures; `[]` keeps a parser available
+    /// without advertising it. Explicit preferred registration overrides this.
+    static var defaultHostKeyAlgorithms: [String]? { get }
+
+    /// Opts custom certificates into host authentication after interoperability
+    /// validation. Parsing/user certificates alone do not imply this capability.
+    static var supportsHostCertificates: Bool { get }
+
     /// The raw reprentation of this publc key as a blob.
     var rawRepresentation: Data { get }
 
@@ -94,6 +103,9 @@ public extension NIOSSHPublicKeyProtocol {
     /// If not provided, defaults to publicKeyPrefix.
     /// This is useful for RSA keys that use rsa-sha2-* signature algorithms while maintaining ssh-rsa key type.
     static var authAlgorithmName: String { publicKeyPrefix }
+
+    static var defaultHostKeyAlgorithms: [String]? { nil }
+    static var supportsHostCertificates: Bool { false }
 
     /// Default: no OpenSSH certificate support for this key type.
     static var certifiedKeyPrefix: String? { nil }

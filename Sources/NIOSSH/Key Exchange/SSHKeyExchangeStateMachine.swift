@@ -656,41 +656,50 @@ extension SSHKeyExchangeStateMachine {
     ]
 
     /// All known host key algorithms.
-    static let bundledServerHostKeyAlgorithms: [Substring] = ["ssh-ed25519", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp521"]
+    static let bundledServerHostKeyAlgorithms: [Substring] = ["ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521"]
 
     /// OpenSSH host-certificate algorithms, in the same preference order as
     /// `bundledServerHostKeyAlgorithms`. Only advertised when the client config
     /// sets `advertiseHostCertificateAlgorithms`. A host key received under one
     /// of these algorithms parses into a `.certified` `NIOSSHPublicKey`.
     ///
-    /// IMPORTANT: this list is intentionally limited to the Ed25519/ECDSA cert
-    /// types and MUST stay in sync with the cert prefixes that
-    /// `NIOSSHCertifiedPublicKey.embeddedKeyParser(forKeyPrefix:)` can map back to
-    /// a base key. We advertise *only* what we can both parse and verify — a host
-    /// key algorithm offered here that we then fail to handle would fail key
-    /// exchange outright (the KEX state machine has no fallback), which is worse
-    /// than not offering it (the server then sends a plain host key and the
-    /// caller's normal host-key validation runs).
-    ///
-    /// RSA host certs (`ssh-rsa-cert-v01@openssh.com` and the
-    /// `rsa-sha2-*-cert-v01@openssh.com` negotiation variants) are deliberately
-    /// NOT advertised for HOST authentication. Custom-keyed certificates can now
-    /// be parsed and serialized in general (registered key types declaring
-    /// `certifiedKeyPrefix` — used for *user* certificate authentication), but
-    /// the RFC 8332 SHA-2 host-key negotiation for plain RSA is not reconciled
-    /// with the strict KEX host-key-algorithm prefix check. Until that is
-    /// addressed (and validated against a real RSA-cert server), RSA-cert hosts
-    /// safely fall back to plain host-key validation.
-    static let hostCertificateAlgorithms: [Substring] = [
-        "ssh-ed25519-cert-v01@openssh.com",
-        "ecdsa-sha2-nistp384-cert-v01@openssh.com",
-        "ecdsa-sha2-nistp256-cert-v01@openssh.com",
-        "ecdsa-sha2-nistp521-cert-v01@openssh.com",
-    ]
+    /// Custom types opt in through `supportsHostCertificates` and must have an
+    /// exact certificate negotiation name. Parser registration alone does not
+    /// enable host authentication: an unsupported advertised key cannot fall
+    /// back once KEX has selected it. RSA certificate aliases remain excluded
+    /// until their host-authentication negotiation is independently supported.
+    static var hostCertificateAlgorithms: [Substring] {
+        let enabledPlainAlgorithms = Set(supportedServerHostKeyAlgorithms)
+        var seen = Set<Substring>()
+        func certificates(from registrations: [CustomPublicKeyRegistration]) -> [Substring] {
+            registrations.compactMap { registration -> Substring? in
+                let key = registration.publicKey
+                guard key.supportsHostCertificates,
+                      enabledPlainAlgorithms.contains(Substring(key.authAlgorithmName)),
+                      let certificate = key.certifiedKeyPrefix,
+                      key.certifiedAuthAlgorithmName == certificate else {
+                    return nil
+                }
+                return Substring(certificate)
+            }
+        }
+
+        // Explicit preferences apply to certificates as well as plain host keys.
+        // Deduplicate after ordering so a preferred registration keeps its place
+        // even when the same key is also registered with the defaults.
+        return (certificates(from: NIOSSHPublicKey.preferredPublicKeyRegistrations) + [
+            "ssh-ed25519-cert-v01@openssh.com",
+            "ecdsa-sha2-nistp256-cert-v01@openssh.com",
+            "ecdsa-sha2-nistp384-cert-v01@openssh.com",
+            "ecdsa-sha2-nistp521-cert-v01@openssh.com",
+        ] + certificates(from: NIOSSHPublicKey.customPublicKeyRegistrations))
+            .filter { seen.insert($0).inserted }
+    }
 
     static var supportedServerHostKeyAlgorithms: [Substring] {
         func algorithms(
-            from registrations: [CustomPublicKeyRegistration]
+            from registrations: [CustomPublicKeyRegistration],
+            applyDefaults: Bool = true
         ) -> [Substring] {
             registrations.flatMap { registration in
                 let validNames = [
@@ -699,17 +708,30 @@ extension SSHKeyExchangeStateMachine {
                 ]
                 return registration.signatures.compactMap { signature in
                     validNames.contains(signature.signaturePrefix)
+                        && (!applyDefaults || registration.publicKey.defaultHostKeyAlgorithms?
+                            .contains(signature.signaturePrefix) != false)
                         ? Substring(signature.signaturePrefix)
                         : nil
                 }
             }
         }
 
+        // Sort supported standard algorithms as OpenSSH does, independently of
+        // parser registration order (apps may register FIDO keys after Citadel).
+        let openSSHOrder: [Substring] = [
+            "ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521",
+            "sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@openssh.com",
+            "webauthn-sk-ecdsa-sha2-nistp256@openssh.com",
+            "rsa-sha2-512", "rsa-sha2-256", "ssh-mldsa44-ed25519",
+        ]
+        let defaults = bundledServerHostKeyAlgorithms
+            + algorithms(from: NIOSSHPublicKey.customPublicKeyRegistrations)
+        let supported = Set(defaults)
         var seen = Set<Substring>()
         return (
-            algorithms(from: NIOSSHPublicKey.preferredPublicKeyRegistrations)
-                + bundledServerHostKeyAlgorithms
-                + algorithms(from: NIOSSHPublicKey.customPublicKeyRegistrations)
+            algorithms(from: NIOSSHPublicKey.preferredPublicKeyRegistrations, applyDefaults: false)
+                + openSSHOrder.filter { supported.contains($0) }
+                + defaults
         ).filter { seen.insert($0).inserted }
     }
 }
