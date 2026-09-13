@@ -294,6 +294,9 @@ extension NIOSSHHandler: ChannelDuplexHandler {
         case .globalRequestResponse(let response):
             self.multiplexer?.recordStateMachineResult(isChannel: false)
             try self.handleGlobalRequestResponse(response)
+        case .unimplemented(let sequenceNumber):
+            self.multiplexer?.recordStateMachineResult(isChannel: false)
+            self.handleUnimplemented(sequenceNumber: sequenceNumber)
         case .disconnect:
             self.multiplexer?.recordStateMachineResult(isChannel: false)
             // Welp, we immediately have to close.
@@ -397,6 +400,16 @@ extension NIOSSHHandler {
         while let next = self.pendingGlobalRequestResponses.popFirst() {
             next?.fail(error)
         }
+    }
+
+    /// Some peers answer a global request with UNIMPLEMENTED instead of the
+    /// SSH_MSG_REQUEST_FAILURE RFC 4254 §4 asks for; settle the oldest promise anyway.
+    private func handleUnimplemented(sequenceNumber: UInt32) {
+        NIOSSHDebug.shared.event("peer sent UNIMPLEMENTED for seq=\(sequenceNumber)")
+        guard let next = self.pendingGlobalRequestResponses.popFirst() else {
+            return
+        }
+        next?.fail(NIOSSHError.remotePeerDoesNotSupportMessage(.init(sequenceNumber: sequenceNumber)))
     }
 
     private func handleGlobalRequestResponse(_ response: SSHConnectionStateMachine.StateMachineInboundProcessResult.GlobalRequestResponse) throws {

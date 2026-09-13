@@ -77,6 +77,8 @@ final class SSHConnectionStateMachineTests: XCTestCase {
                                 ()
                             case .some(.noMessage):
                                 ()
+                            case .some(.unimplemented):
+                                ()
                             case .some(.possibleFutureMessage(let futureMessage)):
                                 waitingForServerMessage = true
 
@@ -117,6 +119,8 @@ final class SSHConnectionStateMachineTests: XCTestCase {
                                 ()
                             case .some(.noMessage):
                                 ()
+                            case .some(.unimplemented):
+                                ()
                             case .some(.possibleFutureMessage(let futureMessage)):
                                 waitingForClientMessage = true
 
@@ -132,7 +136,7 @@ final class SSHConnectionStateMachineTests: XCTestCase {
                                         }
                                     }
                                 }
-                            case .some(.forwardToMultiplexer), .some(.globalRequest), .some(.globalRequestResponse), .some(.disconnect), .some(.event):
+                            case .some(.forwardToMultiplexer), .some(.globalRequest), .some(.globalRequestResponse), .some(.unimplemented), .some(.disconnect), .some(.event):
                                 fatalError("Currently unsupported")
                             }
                         }
@@ -153,6 +157,8 @@ final class SSHConnectionStateMachineTests: XCTestCase {
                 case .none:
                     break clientLoop
                 case .some(.noMessage):
+                    ()
+                case .some(.unimplemented):
                     ()
                 case .some(.possibleFutureMessage(let futureMessage)):
                     waitingForClientMessage = true
@@ -184,6 +190,8 @@ final class SSHConnectionStateMachineTests: XCTestCase {
                     break serverLoop
                 case .some(.noMessage):
                     ()
+                case .some(.unimplemented):
+                    ()
                 case .some(.possibleFutureMessage(let futureMessage)):
                     precondition(!waitingForServerMessage, "Unexpected emit message while another message is being processed")
                     waitingForServerMessage = true
@@ -200,7 +208,7 @@ final class SSHConnectionStateMachineTests: XCTestCase {
                             }
                         }
                     }
-                case .some(.forwardToMultiplexer), .some(.globalRequest), .some(.globalRequestResponse), .some(.disconnect), .some(.event):
+                case .some(.forwardToMultiplexer), .some(.globalRequest), .some(.globalRequestResponse), .some(.unimplemented), .some(.disconnect), .some(.event):
                     fatalError("Currently unsupported")
                 }
             }
@@ -224,7 +232,7 @@ final class SSHConnectionStateMachineTests: XCTestCase {
         switch result {
         case .some(.forwardToMultiplexer(let forwardedMessage)):
             XCTAssertEqual(forwardedMessage, message)
-        case .some(.emitMessage), .some(.possibleFutureMessage), .some(.noMessage), .some(.globalRequest), .some(.globalRequestResponse), .some(.disconnect), .some(.event), .none:
+        case .some(.emitMessage), .some(.possibleFutureMessage), .some(.noMessage), .some(.globalRequest), .some(.globalRequestResponse), .some(.unimplemented), .some(.disconnect), .some(.event), .none:
             XCTFail("Unexpected result: \(String(describing: result))")
         }
     }
@@ -249,7 +257,7 @@ final class SSHConnectionStateMachineTests: XCTestCase {
         case .some(.disconnect):
             // Good
             break
-        case .some(.forwardToMultiplexer), .some(.emitMessage), .some(.possibleFutureMessage), .some(.noMessage), .some(.globalRequest), .some(.globalRequestResponse), .some(.event), .none:
+        case .some(.forwardToMultiplexer), .some(.emitMessage), .some(.possibleFutureMessage), .some(.noMessage), .some(.globalRequest), .some(.globalRequestResponse), .some(.unimplemented), .some(.event), .none:
             XCTFail("Unexpected result: \(String(describing: result))")
         }
     }
@@ -266,7 +274,7 @@ final class SSHConnectionStateMachineTests: XCTestCase {
         case .some(.globalRequest(let receivedMessage)):
             // Good
             XCTAssertEqual(.globalRequest(receivedMessage), message)
-        case .some(.forwardToMultiplexer), .some(.emitMessage), .some(.possibleFutureMessage), .some(.noMessage), .some(.globalRequestResponse), .some(.disconnect), .some(.event), .none:
+        case .some(.forwardToMultiplexer), .some(.emitMessage), .some(.possibleFutureMessage), .some(.noMessage), .some(.globalRequestResponse), .some(.unimplemented), .some(.disconnect), .some(.event), .none:
             XCTFail("Unexpected result: \(String(describing: result))")
         }
     }
@@ -283,7 +291,7 @@ final class SSHConnectionStateMachineTests: XCTestCase {
         case .some(.globalRequestResponse(let response)):
             // Good
             return response
-        case .some(.forwardToMultiplexer), .some(.emitMessage), .some(.possibleFutureMessage), .some(.noMessage), .some(.globalRequest), .some(.disconnect), .some(.event), .none:
+        case .some(.forwardToMultiplexer), .some(.emitMessage), .some(.possibleFutureMessage), .some(.noMessage), .some(.globalRequest), .some(.unimplemented), .some(.disconnect), .some(.event), .none:
             XCTFail("Unexpected result: \(String(describing: result))")
             return nil
         }
@@ -301,20 +309,36 @@ final class SSHConnectionStateMachineTests: XCTestCase {
         case .some(.noMessage):
             // Good
             break
-        case .some(.forwardToMultiplexer), .some(.emitMessage), .some(.possibleFutureMessage), .some(.globalRequest), .some(.globalRequestResponse), .some(.disconnect), .some(.event), .none:
+        case .some(.forwardToMultiplexer), .some(.emitMessage), .some(.possibleFutureMessage), .some(.globalRequest), .some(.globalRequestResponse), .some(.unimplemented), .some(.disconnect), .some(.event), .none:
             XCTFail("Unexpected result: \(String(describing: result))")
         }
     }
 
-    private func assertUnimplementedCausesError(sequenceNumber: UInt32, sender: inout SSHConnectionStateMachine, receiver: inout SSHConnectionStateMachine, allocator: ByteBufferAllocator, loop: EmbeddedEventLoop) throws {
+    /// UNIMPLEMENTED must be reported without throwing, and the message after it in the
+    /// same buffer must still be processed: throwing skipped the state write-back.
+    private func assertUnimplementedIsTolerated(sequenceNumber: UInt32, sender: inout SSHConnectionStateMachine, receiver: inout SSHConnectionStateMachine, allocator: ByteBufferAllocator, loop: EmbeddedEventLoop) throws {
         var tempBuffer = allocator.buffer(capacity: 1024)
         XCTAssertNoThrow(try sender.processOutboundMessage(.unimplemented(.init(sequenceNumber: sequenceNumber)), buffer: &tempBuffer, allocator: allocator, loop: loop))
+        XCTAssertNoThrow(try sender.processOutboundMessage(.ignore(.init(data: allocator.buffer(capacity: 0))), buffer: &tempBuffer, allocator: allocator, loop: loop))
         XCTAssert(tempBuffer.readableBytes > 0)
 
         receiver.bufferInboundData(&tempBuffer)
-        XCTAssertThrowsError(try receiver.processInboundMessage(allocator: allocator, loop: loop)) { error in
-            XCTAssertEqual((error as? NIOSSHError)?.type, .remotePeerDoesNotSupportMessage)
+
+        switch try assertNoThrowWithValue(receiver.processInboundMessage(allocator: allocator, loop: loop)) {
+        case .some(.unimplemented(let reported)):
+            XCTAssertEqual(reported, sequenceNumber)
+        case let other:
+            XCTFail("Unexpected result: \(String(describing: other))")
         }
+
+        switch try assertNoThrowWithValue(receiver.processInboundMessage(allocator: allocator, loop: loop)) {
+        case .some(.noMessage):
+            break
+        case let other:
+            XCTFail("Message after UNIMPLEMENTED was not processed: \(String(describing: other))")
+        }
+
+        XCTAssertNil(try assertNoThrowWithValue(receiver.processInboundMessage(allocator: allocator, loop: loop)))
     }
 
     func testBasicConnectionDance() throws {
@@ -516,14 +540,14 @@ final class SSHConnectionStateMachineTests: XCTestCase {
         )
     }
 
-    func testUnimplementedGivesARichError() throws {
+    func testUnimplementedIsNotFatal() throws {
         let allocator = ByteBufferAllocator()
         let loop = EmbeddedEventLoop()
         var client = SSHConnectionStateMachine(role: .client(.init(userAuthDelegate: InfinitePasswordDelegate(), serverAuthDelegate: AcceptAllHostKeysDelegate())))
         var server = SSHConnectionStateMachine(role: .server(.init(hostKeys: [NIOSSHPrivateKey(ed25519Key: .init())], userAuthDelegate: DenyThenAcceptDelegate(messagesToDeny: 1))))
 
         try assertSuccessfulConnection(client: &client, server: &server, allocator: allocator, loop: loop)
-        try self.assertUnimplementedCausesError(sequenceNumber: 0, sender: &client, receiver: &server, allocator: allocator, loop: loop)
+        try self.assertUnimplementedIsTolerated(sequenceNumber: 0, sender: &client, receiver: &server, allocator: allocator, loop: loop)
     }
 
     func testWeTolerateMessagesAfterSendingKexInit() throws {
@@ -678,7 +702,7 @@ final class SSHConnectionStateMachineTests: XCTestCase {
         switch result {
         case .some(.forwardToMultiplexer(let forwardedMessage)):
             XCTAssertEqual(forwardedMessage, message)
-        case .some(.emitMessage), .some(.possibleFutureMessage), .some(.noMessage), .some(.globalRequest), .some(.globalRequestResponse), .some(.disconnect), .some(.event), .none:
+        case .some(.emitMessage), .some(.possibleFutureMessage), .some(.noMessage), .some(.globalRequest), .some(.globalRequestResponse), .some(.unimplemented), .some(.disconnect), .some(.event), .none:
             XCTFail("Unexpected result: \(String(describing: result))")
         }
 
@@ -696,7 +720,7 @@ final class SSHConnectionStateMachineTests: XCTestCase {
         switch result {
         case .some(.emitMessage(let message)):
             XCTAssertNoThrow(try self.run(clientMessage: nil, client: &client, serverMessage: message, server: &server, allocator: allocator, loop: loop, dripFeed: true))
-        case .some(.forwardToMultiplexer), .some(.possibleFutureMessage), .some(.noMessage), .some(.globalRequest), .some(.globalRequestResponse), .some(.disconnect), .some(.event), .none:
+        case .some(.forwardToMultiplexer), .some(.possibleFutureMessage), .some(.noMessage), .some(.globalRequest), .some(.globalRequestResponse), .some(.unimplemented), .some(.disconnect), .some(.event), .none:
             XCTFail("Unexpected result: \(String(describing: result))")
         }
     }

@@ -209,7 +209,8 @@ struct SSHConnectionStateMachine {
                 return .disconnect
 
             case .unimplemented(let unimplemented):
-                throw NIOSSHError.remotePeerDoesNotSupportMessage(unimplemented)
+                self.state = .sentVersion(state)
+                return .unimplemented(sequenceNumber: unimplemented.sequenceNumber)
 
             default:
                 throw NIOSSHError.protocolViolation(protocolName: "transport", violation: "Did not receive version message")
@@ -246,7 +247,8 @@ struct SSHConnectionStateMachine {
                 self.state = .keyExchange(state)
                 return .noMessage
             case .unimplemented(let unimplemented):
-                throw NIOSSHError.remotePeerDoesNotSupportMessage(unimplemented)
+                self.state = .keyExchange(state)
+                return .unimplemented(sequenceNumber: unimplemented.sequenceNumber)
 
             default:
                 // TODO: enforce RFC 4253:
@@ -300,7 +302,8 @@ struct SSHConnectionStateMachine {
                 self.state = .sentNewKeys(state)
                 return .noMessage
             case .unimplemented(let unimplemented):
-                throw NIOSSHError.remotePeerDoesNotSupportMessage(unimplemented)
+                self.state = .sentNewKeys(state)
+                return .unimplemented(sequenceNumber: unimplemented.sequenceNumber)
 
             default:
                 // TODO: enforce RFC 4253:
@@ -355,7 +358,8 @@ struct SSHConnectionStateMachine {
                 throw NIOSSHError.protocolViolation(protocolName: "user auth", violation: "Unexpected user auth message: \(message)")
 
             case .unimplemented(let unimplemented):
-                throw NIOSSHError.remotePeerDoesNotSupportMessage(unimplemented)
+                self.state = .receivedNewKeys(state)
+                return .unimplemented(sequenceNumber: unimplemented.sequenceNumber)
 
             default:
                 throw NIOSSHError.protocolViolation(protocolName: "user auth", violation: "Unexpected inbound message: \(message)")
@@ -430,7 +434,8 @@ struct SSHConnectionStateMachine {
                 return .noMessage
 
             case .unimplemented(let unimplemented):
-                throw NIOSSHError.remotePeerDoesNotSupportMessage(unimplemented)
+                self.state = .userAuthentication(state)
+                return .unimplemented(sequenceNumber: unimplemented.sequenceNumber)
 
             default:
                 throw NIOSSHError.protocolViolation(protocolName: "user auth", violation: "Unexpected inbound message: \(message)")
@@ -492,7 +497,8 @@ struct SSHConnectionStateMachine {
                 self.state = .active(state)
                 return .noMessage
             case .unimplemented(let unimplemented):
-                throw NIOSSHError.remotePeerDoesNotSupportMessage(unimplemented)
+                self.state = .active(state)
+                return .unimplemented(sequenceNumber: unimplemented.sequenceNumber)
 
             default:
                 throw NIOSSHError.protocolViolation(protocolName: "connection", violation: "Unexpected inbound message: \(message)")
@@ -527,7 +533,8 @@ struct SSHConnectionStateMachine {
                 self.state = .receivedKexInitWhenActive(state)
                 return .noMessage
             case .unimplemented(let unimplemented):
-                throw NIOSSHError.remotePeerDoesNotSupportMessage(unimplemented)
+                self.state = .receivedKexInitWhenActive(state)
+                return .unimplemented(sequenceNumber: unimplemented.sequenceNumber)
             default:
                 // TODO: enforce RFC 4253:
                 //
@@ -604,7 +611,8 @@ struct SSHConnectionStateMachine {
                 self.state = .sentKexInitWhenActive(state)
                 return .noMessage
             case .unimplemented(let unimplemented):
-                throw NIOSSHError.remotePeerDoesNotSupportMessage(unimplemented)
+                self.state = .sentKexInitWhenActive(state)
+                return .unimplemented(sequenceNumber: unimplemented.sequenceNumber)
 
             default:
                 throw NIOSSHError.protocolViolation(protocolName: "connection", violation: "Unexpected inbound message: \(message)")
@@ -647,7 +655,8 @@ struct SSHConnectionStateMachine {
                 self.state = .rekeying(state)
                 return .noMessage
             case .unimplemented(let unimplemented):
-                throw NIOSSHError.remotePeerDoesNotSupportMessage(unimplemented)
+                self.state = .rekeying(state)
+                return .unimplemented(sequenceNumber: unimplemented.sequenceNumber)
             default:
                 // TODO: enforce RFC 4253:
                 //
@@ -721,7 +730,8 @@ struct SSHConnectionStateMachine {
                 self.state = .rekeyingReceivedNewKeysState(state)
                 return .noMessage
             case .unimplemented(let unimplemented):
-                throw NIOSSHError.remotePeerDoesNotSupportMessage(unimplemented)
+                self.state = .rekeyingReceivedNewKeysState(state)
+                return .unimplemented(sequenceNumber: unimplemented.sequenceNumber)
 
             default:
                 throw NIOSSHError.protocolViolation(protocolName: "connection", violation: "Unexpected inbound message: \(message)")
@@ -765,7 +775,8 @@ struct SSHConnectionStateMachine {
                 self.state = .rekeyingSentNewKeysState(state)
                 return .noMessage
             case .unimplemented(let unimplemented):
-                throw NIOSSHError.remotePeerDoesNotSupportMessage(unimplemented)
+                self.state = .rekeyingSentNewKeysState(state)
+                return .unimplemented(sequenceNumber: unimplemented.sequenceNumber)
 
             default:
                 // TODO: enforce RFC 4253:
@@ -1197,6 +1208,10 @@ extension SSHConnectionStateMachine {
         case forwardToMultiplexer(SSHMessage)
         case globalRequestResponse(GlobalRequestResponse)
         case globalRequest(SSHMessage.GlobalRequestMessage)
+        /// The peer answered one of our messages with SSH_MSG_UNIMPLEMENTED. Informational
+        /// per RFC 4253 §11.4, so states write back rather than throw: a throw would leave
+        /// the packet buffered to re-throw on every later read.
+        case unimplemented(sequenceNumber: UInt32)
         case disconnect
         case noMessage
         case event(Any)
