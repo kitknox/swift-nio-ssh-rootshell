@@ -536,6 +536,88 @@ final class ChildChannelMultiplexerTests: XCTestCase {
         XCTAssertFalse(channel.isActive)
     }
 
+    func testChannelMessageBeforeOpenConfirmationDoesNotCrash() throws {
+        let harness = self.harnessForbiddingInboundChannels()
+        defer {
+            harness.finish()
+        }
+
+        var childChannel: Channel?
+        harness.multiplexer.createChildChannel(channelType: .session) { channel, _ in
+            childChannel = channel
+            return channel.eventLoop.makeSucceededFuture(())
+        }
+
+        guard let channel = childChannel else {
+            XCTFail("Did not create child channel")
+            return
+        }
+
+        XCTAssertFalse(channel.isActive)
+        XCTAssertEqual(harness.flushedMessages.count, 1)
+        let channelID = self.assertChannelOpen(harness.flushedMessages.first)
+
+        // The peer answers CHANNEL_OPEN with data instead of a confirmation. We don't know its channel id,
+        // so no CHANNEL_CLOSE can be sent; the channel just errors locally.
+        var closeError: Error?
+        channel.closeFuture.whenFailure { closeError = $0 }
+        XCTAssertNoThrow(try harness.multiplexer.receiveMessage(self.data(peerChannelID: channelID!, data: ByteBuffer(string: "x"))))
+        harness.eventLoop.run()
+        XCTAssertNotNil(closeError)
+        XCTAssertEqual(harness.flushedMessages.count, 1)
+        XCTAssertFalse(channel.isActive)
+
+        // The same for EOF and CLOSE on a fresh channel each.
+        for message in [self.eof(peerChannelID:), self.close(peerChannelID:)] {
+            var secondChannel: Channel?
+            harness.multiplexer.createChildChannel(channelType: .session) { channel, _ in
+                secondChannel = channel
+                return channel.eventLoop.makeSucceededFuture(())
+            }
+            let secondID = self.assertChannelOpen(harness.flushedMessages.last)
+            XCTAssertNoThrow(try harness.multiplexer.receiveMessage(message(secondID!)))
+            harness.eventLoop.run()
+            XCTAssertFalse(secondChannel!.isActive)
+        }
+    }
+
+    func testZeroMaximumPacketSizeFromPeerIsRejected() throws {
+        let harness = self.harnessForbiddingInboundChannels()
+        defer {
+            harness.finish()
+        }
+
+        var childChannel: Channel?
+        harness.multiplexer.createChildChannel(channelType: .session) { channel, _ in
+            childChannel = channel
+            return channel.eventLoop.makeSucceededFuture(())
+        }
+
+        guard let channel = childChannel else {
+            XCTFail("Did not create child channel")
+            return
+        }
+
+        let channelID = self.assertChannelOpen(harness.flushedMessages.first)
+
+        var closeError: Error?
+        channel.closeFuture.whenFailure { closeError = $0 }
+        XCTAssertNoThrow(try harness.multiplexer.receiveMessage(self.openConfirmation(originalChannelID: channelID!, peerChannelID: 1, maxPacketSize: 0)))
+        harness.eventLoop.run()
+
+        // Before the fix this write looped forever inside deliverPendingWrites.
+        var writeError: Error?
+        channel.writeAndFlush(SSHChannelData(type: .channel, data: .byteBuffer(ByteBuffer(string: "hello")))).whenFailure { writeError = $0 }
+        harness.eventLoop.run()
+
+        XCTAssertNotNil(closeError)
+        XCTAssertNotNil(writeError)
+        XCTAssertFalse(channel.isActive)
+        // Open, then the close we send for the protocol violation.
+        XCTAssertEqual(harness.flushedMessages.count, 2)
+        self.assertChannelClose(harness.flushedMessages.last, recipientChannel: 1)
+    }
+
     func testFailingOutboundChannelInitializerDoesNotDoIO() throws {
         let harness = self.harnessForbiddingInboundChannels()
         defer {

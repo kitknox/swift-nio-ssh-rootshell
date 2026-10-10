@@ -570,8 +570,8 @@ extension SSHChildChannel: Channel, ChannelCore {
 
     private func initializerFailed(error: Error) {
         // Tell the remote peer to go away.
-        if self.state.isActiveOnNetwork {
-            let message = SSHMessage.ChannelOpenFailureMessage(recipientChannel: self.state.remoteChannelIdentifier!,
+        if self.state.isActiveOnNetwork, let remoteID = self.state.remoteChannelIdentifier {
+            let message = SSHMessage.ChannelOpenFailureMessage(recipientChannel: remoteID,
                                                                reasonCode: 2,
                                                                description: "",
                                                                language: "en-US")
@@ -656,9 +656,10 @@ extension SSHChildChannel: Channel, ChannelCore {
         self.pipeline.fireErrorCaught(error)
         self.notifyChannelInactive()
 
-        // Ok, we need to notify the network that we're done.
-        if self.state.isActiveOnNetwork, !self.state.sentClose {
-            let message = SSHMessage.ChannelCloseMessage(recipientChannel: self.state.remoteChannelIdentifier!)
+        // Ok, we need to notify the network that we're done. Before OPEN_CONFIRMATION we have no remote id,
+        // so there is nothing to close; the multiplexer closes it if the peer confirms later.
+        if self.state.isActiveOnNetwork, !self.state.sentClose, let remoteID = self.state.remoteChannelIdentifier {
+            let message = SSHMessage.ChannelCloseMessage(recipientChannel: remoteID)
             self.processOutboundMessage(.channelClose(message), promise: nil)
             self.writePendingToMultiplexer()
         }
@@ -800,6 +801,10 @@ private extension SSHChildChannel {
     private func deliverPendingWrites() {
         while self.pendingWritesFromChannel.hasMark, self.writabilityManager.windowSpaceOnNetwork > 0, var write = self.pendingWritesFromChannel.first {
             let maxWriteLength = min(self.writabilityManager.windowSpaceOnNetwork, Int(self.peerMaxMessageSize))
+            guard maxWriteLength > 0 else {
+                // Trimming to zero bytes makes no progress; a zero packet size is rejected at open.
+                return
+            }
             let (actualWrite, excess) = write.0.trim(maxLength: maxWriteLength)
             write.0 = actualWrite
 
@@ -873,6 +878,17 @@ extension SSHChildChannel {
     private func handleInboundChannelOpen(_ message: SSHMessage.ChannelOpenMessage) throws {
         self.state.receiveChannelOpen(message)
 
+        // A zero packet size would stall every write; reject the open rather than accept it.
+        guard message.maximumPacketSize > 0 else {
+            let failure = SSHMessage.ChannelOpenFailureMessage(recipientChannel: message.senderChannel,
+                                                               reasonCode: 2,
+                                                               description: "maximum packet size must be non-zero",
+                                                               language: "en-US")
+            self.processOutboundMessage(.channelOpenFailure(failure), promise: nil)
+            self.writePendingToMultiplexer()
+            return
+        }
+
         // Window size starts at zero, so we treat this as an increment. However, we disregard whether this changed
         // the writability value, as we lie about writability until we're active anyway.
         _ = try self.writabilityManager.outboundWindowIncremented(message.initialWindowSize)
@@ -885,6 +901,11 @@ extension SSHChildChannel {
 
     private func handleInboundChannelOpenConfirmation(_ message: SSHMessage.ChannelOpenConfirmationMessage) throws {
         try self.state.receiveChannelOpenConfirmation(message)
+
+        // Validated after the state transition so the resulting close carries the peer's channel id.
+        guard message.maximumPacketSize > 0 else {
+            throw NIOSSHError.protocolViolation(protocolName: "channel", violation: "maximum packet size must be non-zero")
+        }
 
         // Window size starts at zero, so we treat this as an increment. However, we disregard whether this changed
         // the writability value, as we lie about writability until we're active anyway.
