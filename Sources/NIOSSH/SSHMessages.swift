@@ -336,6 +336,9 @@ extension SSHMessage {
             /// connection to a Unix-domain socket on the server, the
             /// streamlocal analogue of `direct-tcpip`.
             case directStreamLocal(DirectStreamLocal)
+            /// An open we can't service (unknown type, or an originator that isn't an IP address).
+            /// The multiplexer answers it with OPEN_FAILURE instead of creating a child channel.
+            case rejected(typeName: String, reasonCode: UInt32)
         }
 
         struct ForwardedTCPIP: Equatable {
@@ -387,6 +390,10 @@ extension SSHMessage {
     struct ChannelOpenFailureMessage: Equatable {
         // SSH_MSG_CHANNEL_OPEN_FAILURE
         static let id: UInt8 = 92
+
+        // RFC 4254 §5.1 reason codes.
+        static let connectFailed: UInt32 = 2
+        static let unknownChannelType: UInt32 = 3
 
         var recipientChannel: UInt32
         var reasonCode: UInt32
@@ -1087,9 +1094,11 @@ extension ByteBuffer {
                     throw NIOSSHError.unknownPacketType(diagnostic: "Invalid port values: \(portListening) \(originatorPort)")
                 }
 
-                let originator = try SocketAddress(ipAddress: originatorIP, port: Int(originatorPort))
-
-                type = .forwardedTCPIP(.init(hostListening: hostListening, portListening: UInt16(portListening), originatorAddress: originator))
+                if let originator = try? SocketAddress(ipAddress: originatorIP, port: Int(originatorPort)) {
+                    type = .forwardedTCPIP(.init(hostListening: hostListening, portListening: UInt16(portListening), originatorAddress: originator))
+                } else {
+                    type = .rejected(typeName: typeRawValue, reasonCode: SSHMessage.ChannelOpenFailureMessage.connectFailed)
+                }
 
             case "direct-tcpip":
                 guard
@@ -1105,9 +1114,11 @@ extension ByteBuffer {
                     throw NIOSSHError.unknownPacketType(diagnostic: "Invalid port values: \(portToConnectTo) \(originatorPort)")
                 }
 
-                let originator = try SocketAddress(ipAddress: originatorIP, port: Int(originatorPort))
-
-                type = .directTCPIP(.init(hostToConnectTo: hostToConnectTo, portToConnectTo: UInt16(portToConnectTo), originatorAddress: originator))
+                if let originator = try? SocketAddress(ipAddress: originatorIP, port: Int(originatorPort)) {
+                    type = .directTCPIP(.init(hostToConnectTo: hostToConnectTo, portToConnectTo: UInt16(portToConnectTo), originatorAddress: originator))
+                } else {
+                    type = .rejected(typeName: typeRawValue, reasonCode: SSHMessage.ChannelOpenFailureMessage.connectFailed)
+                }
 
             case "auth-agent@openssh.com":
                 // SSH agent forwarding channel - no additional data required
@@ -1141,7 +1152,10 @@ extension ByteBuffer {
                 type = .directStreamLocal(.init(socketPath: socketPath))
 
             default:
-                throw NIOSSHError.unknownPacketType(diagnostic: "Channel request with \(typeRawValue)")
+                // e.g. x11: refused per RFC 4254 §5.1 rather than failing the whole transport. The
+                // type-specific data is skipped: the packet parser rejects unread payload bytes.
+                self.moveReaderIndex(to: self.writerIndex)
+                type = .rejected(typeName: typeRawValue, reasonCode: SSHMessage.ChannelOpenFailureMessage.unknownChannelType)
             }
 
             return SSHMessage.ChannelOpenMessage(type: type, senderChannel: senderChannel, initialWindowSize: initialWindowSize, maximumPacketSize: maximumPacketSize)
@@ -1711,6 +1725,9 @@ extension ByteBuffer {
 
         case .directStreamLocal:
             writtenBytes += self.writeSSHString("direct-streamlocal@openssh.com".utf8)
+
+        case .rejected(let typeName, _):
+            writtenBytes += self.writeSSHString(typeName.utf8)
         }
 
         writtenBytes += self.writeInteger(message.senderChannel)
@@ -1749,6 +1766,10 @@ extension ByteBuffer {
             // Reserved string + uint32, always empty/zero per OpenSSH PROTOCOL.
             writtenBytes += self.writeSSHString("".utf8)
             writtenBytes += self.writeInteger(UInt32(0))
+
+        case .rejected:
+            // Inbound only; the type-specific data was never kept.
+            break
         }
 
         return writtenBytes
@@ -1974,6 +1995,16 @@ extension SSHMultiMessage: RandomAccessCollection {
         default:
             preconditionFailure("Index \(position) is invalid")
         }
+    }
+}
+
+extension SSHMultiMessage {
+    /// An OpenSSH PONG reply, which a slow-reading peer could otherwise make us queue without bound.
+    var isPong: Bool {
+        guard self.count == 1, case .unknown(let message) = self._first else {
+            return false
+        }
+        return message.type == SSHMessage.UnknownMessage.pongType
     }
 }
 

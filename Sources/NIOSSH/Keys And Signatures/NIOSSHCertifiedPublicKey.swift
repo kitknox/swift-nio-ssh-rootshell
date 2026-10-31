@@ -310,6 +310,11 @@ extension NIOSSHCertifiedPublicKey {
             throw NIOSSHError.invalidCertificate(diagnostics: "Certificate was not signed by one of the allowed principals")
         }
 
+        // SHA-1 RSA CA signatures are refused, matching OpenSSH's default CASignatureAlgorithms.
+        guard !self.signature.algorithmName.elementsEqual("ssh-rsa".utf8) else {
+            throw NIOSSHError.invalidCertificate(diagnostics: "Certificate is signed with a disallowed algorithm (ssh-rsa)")
+        }
+
         guard self.signatureKey.isValidSignature(self.signature, for: self.signableBytes) else {
             throw NIOSSHError.invalidCertificate(diagnostics: "Signature is not valid for this certificate")
         }
@@ -323,12 +328,9 @@ extension NIOSSHCertifiedPublicKey {
             throw NIOSSHError.invalidCertificate(diagnostics: "Certificate is not valid for this principal")
         }
 
-        // This can only be negative if we're in a terribly misconfigured system, so we can safely just turn this directly
-        // into a UInt64.
-        let now = DispatchWallTime.now()
-        let validAfter = DispatchWallTime(secondsSinceEpoch: self.validAfter)
-        let validBefore = DispatchWallTime(secondsSinceEpoch: self.validBefore)
-        guard validAfter <= now, validBefore > now else {
+        // Compare as UInt64 seconds: `valid_before` is UInt64.max for certificates issued without an expiry.
+        let now = UInt64(clamping: Int64(Date().timeIntervalSince1970))
+        guard self.validAfter <= now, self.validBefore > now else {
             throw NIOSSHError.invalidCertificate(diagnostics: "Certificate is no longer valid")
         }
 
@@ -822,12 +824,5 @@ extension ByteBuffer {
         }
 
         return map
-    }
-}
-
-extension DispatchWallTime {
-    init(secondsSinceEpoch: UInt64) {
-        let t = timespec(tv_sec: time_t(secondsSinceEpoch), tv_nsec: 0)
-        self = DispatchWallTime(timespec: t)
     }
 }

@@ -566,6 +566,37 @@ final class SSHMessagesTests: XCTestCase {
         buffer.clear()
         buffer.writeBytes([SSHMessage.ChannelOpenMessage.id, 0, 0])
         XCTAssertNil(try buffer.readSSHMessage())
+
+        // Opens we can't service parse to `.rejected` so the multiplexer can refuse them.
+        buffer.clear()
+        buffer.writeInteger(SSHMessage.ChannelOpenMessage.id)
+        buffer.writeSSHString("x11".utf8)
+        buffer.writeInteger(UInt32(5))
+        buffer.writeInteger(UInt32(1))
+        buffer.writeInteger(UInt32(1))
+        buffer.writeSSHString("127.0.0.1".utf8)
+        buffer.writeInteger(UInt32(6010))
+        XCTAssertEqual(
+            try buffer.readSSHMessage(),
+            .channelOpen(.init(type: .rejected(typeName: "x11", reasonCode: 3), senderChannel: 5, initialWindowSize: 1, maximumPacketSize: 1))
+        )
+
+        for type in ["forwarded-tcpip", "direct-tcpip"] {
+            buffer.clear()
+            buffer.writeInteger(SSHMessage.ChannelOpenMessage.id)
+            buffer.writeSSHString(type.utf8)
+            buffer.writeInteger(UInt32(1))
+            buffer.writeInteger(UInt32(1))
+            buffer.writeInteger(UInt32(1))
+            buffer.writeSSHString("localhost".utf8)
+            buffer.writeInteger(UInt32(80))
+            buffer.writeSSHString("not-an-ip".utf8)
+            buffer.writeInteger(UInt32(1234))
+            XCTAssertEqual(
+                try buffer.readSSHMessage(),
+                .channelOpen(.init(type: .rejected(typeName: type, reasonCode: 2), senderChannel: 1, initialWindowSize: 1, maximumPacketSize: 1))
+            )
+        }
     }
 
     func testChannelOpenConfirmation() throws {

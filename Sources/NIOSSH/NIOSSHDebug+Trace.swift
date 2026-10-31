@@ -237,6 +237,7 @@ extension SSHMessage {
             case .authAgent: typeStr = "auth-agent@openssh.com"
             case .forwardedStreamLocal(let f): typeStr = "forwarded-streamlocal socket=\(f.socketPath)"
             case .directStreamLocal(let d): typeStr = "direct-streamlocal socket=\(d.socketPath)"
+            case .rejected(let name, let code): typeStr = "rejected \(name.prefix(64)) reason=\(code)"
             }
             return "CHANNEL_OPEN type=\(typeStr) sender=\(m.senderChannel) initialWindow=\(m.initialWindowSize) maxPacket=\(m.maximumPacketSize)"
 

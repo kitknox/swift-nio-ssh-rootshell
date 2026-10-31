@@ -363,6 +363,25 @@ final class ChildChannelMultiplexerTests: XCTestCase {
         self.assertChannelOpenConfirmation(harness.flushedMessages.first, recipientChannel: 1)
     }
 
+    func testRejectedChannelTypeIsRefusedWithoutChildChannel() throws {
+        let harness = self.harnessForbiddingInboundChannels()
+        defer {
+            harness.finish()
+        }
+
+        let open = SSHMessage.channelOpen(.init(type: .rejected(typeName: "x11", reasonCode: 3), senderChannel: 9, initialWindowSize: 1024, maximumPacketSize: 1024))
+        XCTAssertNoThrow(try harness.multiplexer.receiveMessage(open))
+        harness.eventLoop.run()
+        XCTAssertEqual(harness.flushedMessages.count, 1)
+
+        guard case .some(.channelOpenFailure(let failure)) = harness.flushedMessages.first else {
+            XCTFail("Expected OPEN_FAILURE, got \(String(describing: harness.flushedMessages.first))")
+            return
+        }
+        XCTAssertEqual(failure.recipientChannel, 9)
+        XCTAssertEqual(failure.reasonCode, 3)
+    }
+
     func testRejectInboundChannelCreation() {
         let errorLogger = ErrorLoggingHandler()
 

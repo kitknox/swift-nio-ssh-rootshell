@@ -406,6 +406,26 @@ final class HostKeyTests: XCTestCase {
         }
     }
 
+    // Mirrors session-bind@openssh.com: the session ID is the exchange hash the host key signed in KEX.
+    func testWireSignatureVerifiesOverSessionID() throws {
+        for privateKey in [NIOSSHPrivateKey(ed25519Key: .init()), NIOSSHPrivateKey(p256Key: .init()), NIOSSHPrivateKey(p384Key: .init())] {
+            let exchangeHash = SHA256.hash(data: Array("exchange".utf8))
+            let sessionID = ByteBuffer(bytes: Array(exchangeHash))
+            var signatureBlob = ByteBuffer()
+            signatureBlob.writeSSHSignature(try privateKey.sign(digest: exchangeHash))
+            var keyBlob = ByteBuffer()
+            keyBlob.writeSSHHostKey(privateKey.publicKey)
+
+            let hostKey = try NIOSSHPublicKey(sshWireBlob: keyBlob)
+            XCTAssertEqual(hostKey, privateKey.publicKey)
+            XCTAssertTrue(hostKey.isValidSignature(sshWireSignature: signatureBlob, for: sessionID))
+            XCTAssertFalse(hostKey.isValidSignature(sshWireSignature: signatureBlob, for: ByteBuffer(bytes: [1, 2, 3])))
+            XCTAssertFalse(NIOSSHPrivateKey(ed25519Key: .init()).publicKey.isValidSignature(sshWireSignature: signatureBlob, for: sessionID))
+            XCTAssertFalse(hostKey.isValidSignature(sshWireSignature: ByteBuffer(bytes: [0, 0, 0, 1]), for: sessionID))
+        }
+        XCTAssertThrowsError(try NIOSSHPublicKey(sshWireBlob: ByteBuffer(bytes: [0, 0, 0, 3, 0x61, 0x62, 0x63])))
+    }
+
     private func roundTripKey(keyData: String, label: String, comment: String) throws {
         let key = try assertNoThrowWithValue(NIOSSHPublicKey(openSSHPublicKey: keyData))
         var keyBuffer = ByteBufferAllocator().buffer(capacity: 1024)

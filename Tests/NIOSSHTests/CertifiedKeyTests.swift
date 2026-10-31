@@ -1167,6 +1167,50 @@ extension CertifiedKeyTests {
     private func createPrivateKey() -> NIOSSHPrivateKey {
         return NIOSSHPrivateKey(ed25519Key: .init())
     }
+
+    private func makeSignedHostCertificate(validAfter: UInt64, validBefore: UInt64) throws -> (NIOSSHCertifiedPublicKey, NIOSSHPublicKey) {
+        let caSigningKey = P256.Signing.PrivateKey()
+        let caKey = NIOSSHPrivateKey(p256Key: caSigningKey)
+        var cert = try NIOSSHCertifiedPublicKey(
+            nonce: ByteBuffer(repeating: 0, count: 32),
+            serial: 1,
+            type: .host,
+            key: NIOSSHPrivateKey(p256Key: .init()).publicKey,
+            keyID: "host",
+            validPrincipals: ["example.com"],
+            validAfter: validAfter,
+            validBefore: validBefore,
+            criticalOptions: [:],
+            extensions: [:],
+            signatureKey: caKey.publicKey,
+            signature: caKey.sign(digest: SHA256.hash(data: [0]))
+        )
+        // Certificate verification hashes the signable bytes itself, so sign the raw bytes.
+        let signature = try caSigningKey.signature(for: cert.signableBytes.readableBytesView)
+        cert.signature = NIOSSHSignature(backingSignature: .ecdsaP256(signature))
+        return (cert, caKey.publicKey)
+    }
+
+    // `ssh-keygen -s` without `-V` issues valid_before = UInt64.max; this used to trap in time_t conversion.
+    func testCertificateValidForeverValidates() throws {
+        let (cert, caKey) = try self.makeSignedHostCertificate(validAfter: 0, validBefore: .max)
+        XCTAssertNoThrow(try cert.validate(principal: "example.com", type: .host, allowedAuthoritySigningKeys: [caKey]))
+    }
+
+    func testCertificateWithHugeValidAfterIsNotYetValid() throws {
+        let (cert, caKey) = try self.makeSignedHostCertificate(validAfter: .max - 1, validBefore: .max)
+        XCTAssertThrowsError(try cert.validate(principal: "example.com", type: .host, allowedAuthoritySigningKeys: [caKey])) { error in
+            XCTAssertEqual((error as? NIOSSHError)?.type, .invalidCertificate)
+        }
+    }
+
+    func testCertificatePastValidBeforeIsRejected() throws {
+        let now = UInt64(Date().timeIntervalSince1970)
+        let (cert, caKey) = try self.makeSignedHostCertificate(validAfter: 0, validBefore: now - 1)
+        XCTAssertThrowsError(try cert.validate(principal: "example.com", type: .host, allowedAuthoritySigningKeys: [caKey])) { error in
+            XCTAssertEqual((error as? NIOSSHError)?.type, .invalidCertificate)
+        }
+    }
 }
 
 // Helper delegate that accepts all authentication

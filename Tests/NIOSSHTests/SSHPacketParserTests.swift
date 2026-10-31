@@ -185,6 +185,39 @@ final class SSHPacketParserTests: XCTestCase {
         }
     }
 
+    // An x11 open carries address/port data the parser doesn't model; it must still parse as a
+    // whole packet (unread payload fails packet validation) so the open can be refused.
+    func testUnknownChannelOpenWithPayloadParsesAsPacket() throws {
+        var parser = SSHPacketParser(allocator: ByteBufferAllocator())
+        self.feedVersion(to: &parser)
+
+        var payload = ByteBufferAllocator().buffer(capacity: 64)
+        payload.writeInteger(SSHMessage.ChannelOpenMessage.id)
+        payload.writeSSHString("x11".utf8)
+        payload.writeInteger(UInt32(3))
+        payload.writeInteger(UInt32(2_097_152))
+        payload.writeInteger(UInt32(16_384))
+        payload.writeSSHString("127.0.0.1".utf8)
+        payload.writeInteger(UInt32(6010))
+
+        var paddingLength = 8 - (5 + payload.readableBytes) % 8
+        if paddingLength < 4 { paddingLength += 8 }
+        var packet = ByteBufferAllocator().buffer(capacity: 128)
+        packet.writeInteger(UInt32(1 + payload.readableBytes + paddingLength))
+        packet.writeInteger(UInt8(paddingLength))
+        packet.writeBuffer(&payload)
+        packet.writeBytes(Array(repeating: UInt8(0), count: paddingLength))
+        parser.append(bytes: &packet)
+
+        switch try parser.nextPacket() {
+        case .channelOpen(let message):
+            XCTAssertEqual(message.type, .rejected(typeName: "x11", reasonCode: 3))
+            XCTAssertEqual(message.senderChannel, 3)
+        default:
+            XCTFail("Expecting .channelOpen")
+        }
+    }
+
     func testBinaryTwoMessages() throws {
         var parser = SSHPacketParser(allocator: ByteBufferAllocator())
         self.feedVersion(to: &parser)

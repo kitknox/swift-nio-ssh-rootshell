@@ -48,6 +48,9 @@ public final class NIOSSHHandler {
     // Whether we're expecting a channelReadComplete.
     private var expectingChannelReadComplete: Bool = false
 
+    // Set once inbound transport processing has thrown; see `failTransport`.
+    private var inboundTransportFailed: Bool = false
+
     // A buffer of pending channel initializations. A channel initialization is pending if
     // we're attempting to initialize a channel before user auth is complete.
     private var pendingChannelInitializations: CircularBuffer<(promise: EventLoopPromise<Channel>?, channelType: SSHChannelType, initializer: SSHChildChannel.Initializer?)>
@@ -177,19 +180,44 @@ extension NIOSSHHandler: ChannelDuplexHandler {
         self.expectingChannelReadComplete = true
         NIOSSHDebug.shared.increment("niossh.channelRead")
 
+        // A transport error leaves the parser mid-packet; nothing after it can be trusted.
+        guard !self.inboundTransportFailed else {
+            return
+        }
+
         var data = self.unwrapInboundIn(data)
         let byteCount = data.readableBytes
         NIOSSHDebug.shared.increment("niossh.channelRead.bytes", by: Int64(byteCount))
         self.multiplexer?.recordChannelRead(tcpBytes: byteCount)
         self.stateMachine.bufferInboundData(&data)
 
-        do {
-            while let result = try self.stateMachine.processInboundMessage(allocator: context.channel.allocator, loop: context.eventLoop) {
-                try self.processInboundMessageResult(result, context: context)
+        while true {
+            let result: SSHConnectionStateMachine.StateMachineInboundProcessResult?
+            do {
+                result = try self.stateMachine.processInboundMessage(allocator: context.channel.allocator, loop: context.eventLoop)
+            } catch {
+                self.failTransport(error, context: context)
+                return
             }
-        } catch {
-            context.fireErrorCaught(error)
+            guard let result else {
+                return
+            }
+            do {
+                try self.processInboundMessageResult(result, context: context)
+            } catch {
+                context.fireErrorCaught(error)
+                return
+            }
         }
+    }
+
+    /// Poisons the connection after an inbound transport error (parse, decrypt, MAC, strict KEX),
+    /// as OpenSSH does: later bytes are dropped and the TCP connection is closed.
+    private func failTransport(_ error: Error, context: ChannelHandlerContext) {
+        self.inboundTransportFailed = true
+        NIOSSHDebug.shared.event("inbound transport error, closing: \(error)")
+        context.fireErrorCaught(error)
+        context.close(promise: nil)
     }
 
     public func channelReadComplete(context: ChannelHandlerContext) {
@@ -268,6 +296,11 @@ extension NIOSSHHandler: ChannelDuplexHandler {
         switch result {
         case .emitMessage(let message):
             self.multiplexer?.recordStateMachineResult(isChannel: false)
+            // A peer that sends PINGs but doesn't read must not queue unbounded PONGs.
+            if !context.channel.isWritable, message.isPong {
+                NIOSSHDebug.shared.increment("niossh.pong.dropped")
+                return
+            }
             try self.writeMessage(message, context: context)
             self.sendPendingChildWritesIfPossible()
         case .noMessage:

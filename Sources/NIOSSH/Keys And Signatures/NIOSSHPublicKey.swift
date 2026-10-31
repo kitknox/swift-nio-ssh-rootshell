@@ -160,6 +160,27 @@ extension NIOSSHPublicKey {
 }
 
 extension NIOSSHPublicKey {
+    /// Parses an SSH wire-format public key (`string algorithm` followed by the key data).
+    public init(sshWireBlob: ByteBuffer) throws {
+        var buffer = sshWireBlob
+        guard let key = try buffer.readSSHHostKey(), buffer.readableBytes == 0 else {
+            throw NIOSSHError.invalidSSHMessage(reason: "invalid public key blob")
+        }
+        self = key
+    }
+
+    /// Verifies an SSH wire-format signature over raw `data`, as OpenSSH's `sshkey_verify` does;
+    /// e.g. the host-key signature an agent receives in `session-bind@openssh.com`.
+    public func isValidSignature(sshWireSignature: ByteBuffer, for data: ByteBuffer) -> Bool {
+        var buffer = sshWireSignature
+        guard let signature = try? buffer.readSSHSignature(), buffer.readableBytes == 0 else {
+            return false
+        }
+        return self.isValidSignature(signature, for: data)
+    }
+}
+
+extension NIOSSHPublicKey {
     /// The various key types that can be used with NIOSSH.
     enum BackingKey {
         case ed25519(Curve25519.Signing.PublicKey)

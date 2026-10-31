@@ -230,8 +230,12 @@ extension SSHChannelMultiplexer {
         let channel: SSHChildChannel?
 
         switch message {
-        case .channelOpen:
+        case .channelOpen(let open):
             NIOSSHDebug.shared.increment("niossh.msg.channelOpen")
+            if case .rejected(_, let reasonCode) = open.type {
+                self.refuseChannelOpen(open, reasonCode: reasonCode)
+                return
+            }
             channel = try self.openNewChannel(initializer: self.childChannelInitializer)
 
         case .channelOpenConfirmation(let message):
@@ -306,6 +310,19 @@ extension SSHChannelMultiplexer {
         if let channel = channel {
             channel.receiveInboundMessage(message)
         }
+    }
+
+    /// Answers an open we can't service without allocating a child channel.
+    private func refuseChannelOpen(_ open: SSHMessage.ChannelOpenMessage, reasonCode: UInt32) {
+        NIOSSHDebug.shared.increment("niossh.channelOpen.refused")
+        let failure = SSHMessage.ChannelOpenFailureMessage(
+            recipientChannel: open.senderChannel,
+            reasonCode: reasonCode,
+            description: reasonCode == SSHMessage.ChannelOpenFailureMessage.unknownChannelType ? "unknown channel type" : "unsupported originator address",
+            language: ""
+        )
+        self.delegate?.writeFromChildChannel(.channelOpenFailure(failure), nil)
+        self.delegate?.flushFromChildChannel()
     }
 
     func createChildChannel(_ promise: EventLoopPromise<Channel>? = nil, channelType: SSHChannelType, _ channelInitializer: SSHChildChannel.Initializer?) {

@@ -1278,6 +1278,23 @@ class EndToEndTests: XCTestCase {
         XCTAssertNoThrow(try promise.futureResult.wait())
     }
 
+    // An inbound transport error poisons the connection (cf. OpenSSH f7a2c31db): the channel closes
+    // and later bytes are dropped rather than re-parsed.
+    func testInboundTransportErrorClosesConnection() throws {
+        XCTAssertNoThrow(try self.channel.configureWithHarness(TestHarness()))
+        XCTAssertNoThrow(try self.channel.activate())
+        XCTAssertNoThrow(try self.channel.interactInMemory())
+        XCTAssertTrue(self.channel.client.isActive)
+
+        // A plausible packet length followed by bytes that can't decrypt or authenticate.
+        var garbage = self.channel.client.allocator.buffer(capacity: 256)
+        garbage.writeInteger(UInt32(124))
+        garbage.writeBytes(Array(repeating: UInt8(0xA5), count: 252))
+        XCTAssertThrowsError(try self.channel.client.writeInbound(garbage))
+        self.channel.run()
+        XCTAssertFalse(self.channel.client.isActive)
+    }
+
     func testServerDoesNotSendBanner() throws {
         class ClientHandshakeHandler: ChannelInboundHandler {
             typealias InboundIn = Any

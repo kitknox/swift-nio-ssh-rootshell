@@ -679,4 +679,27 @@ final class CustomKeyCertificateTests: XCTestCase {
         }
         XCTAssertTrue(parsed is TestRSAPublicKey)
     }
+
+    // OpenSSH's default CASignatureAlgorithms excludes ssh-rsa (SHA-1); refused before verification.
+    func testSHA1RSACASignatureIsRejected() throws {
+        let caKey = NIOSSHPrivateKey(p256Key: .init()).publicKey
+        let cert = try NIOSSHCertifiedPublicKey(
+            nonce: ByteBuffer(repeating: 0, count: 32),
+            serial: 1,
+            type: .host,
+            key: NIOSSHPrivateKey(p256Key: .init()).publicKey,
+            keyID: "host",
+            validPrincipals: ["example.com"],
+            validAfter: 0,
+            validBefore: .max,
+            criticalOptions: [:],
+            extensions: [:],
+            signatureKey: caKey,
+            signature: NIOSSHSignature(backingSignature: .custom(LegacyStyleRSASignature(rawRepresentation: Data([1, 2, 3]))))
+        )
+        XCTAssertThrowsError(try cert.validate(principal: "example.com", type: .host, allowedAuthoritySigningKeys: [caKey])) { error in
+            XCTAssertEqual((error as? NIOSSHError)?.type, .invalidCertificate)
+            XCTAssertTrue(String(describing: error).contains("ssh-rsa"), "\(error)")
+        }
+    }
 }

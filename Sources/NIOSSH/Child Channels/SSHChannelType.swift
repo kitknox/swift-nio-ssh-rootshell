@@ -161,6 +161,8 @@ extension SSHChannelType {
             self = .forwardedStreamLocal(.init(socketPath: message.socketPath))
         case .directStreamLocal(let message):
             self = .directStreamLocal(.init(socketPath: message.socketPath))
+        case .rejected:
+            preconditionFailure("SSHChannelMultiplexer refuses rejected opens before creating a child channel")
         }
     }
 }
