@@ -91,6 +91,18 @@ final class SSHChannelMultiplexer {
     private var lastChannelReadUs: Int64 = 0   // Timestamp of last channelRead
     private var snapNonChannelMsgs: Int = 0    // Non-channel SSH messages (rekey, keepalive, etc.)
     private var snapSshPacketsParsed: Int = 0  // Total SSH packets parsed by state machine
+    private var wasDebugEnabled: Bool = false  // Tracks disabled->enabled transitions to reset stale accumulators
+
+    private func resetSnapshotCounters(now: Int64) {
+        snapDataPkts = 0; snapDataBytes = 0
+        snapWaIn = 0; snapWaOut = 0; snapWaOutBytes = 0
+        snapConfirms = 0; snapFailures = 0; snapCloses = 0; snapEOFs = 0
+        snapTcpReads = 0; snapTcpBytes = 0
+        snapSshPacketsParsed = 0; snapNonChannelMsgs = 0
+        windowAdjustBytesSinceSnapshot = 0
+        channelDataBytesSinceSnapshot = 0
+        lastSnapshotTimeUs = now
+    }
 
     init(
         delegate: SSHMultiplexerDelegate,
@@ -155,6 +167,7 @@ final class SSHChannelMultiplexer {
 
     /// Called by NIOSSHHandler on each channelRead (TCP data arrival).
     func recordChannelRead(tcpBytes: Int) {
+        guard NIOSSHDebug.shared.isEventEnabled else { return }
         snapTcpReads += 1
         snapTcpBytes += Int64(tcpBytes)
         lastChannelReadUs = NIOSSHDebug.nowUs()
@@ -348,59 +361,67 @@ extension SSHChannelMultiplexer {
     private static let readCompleteBatchSize = 8
 
     func parentChannelReadComplete() {
-        let channelCount = self.channels.count
-        NIOSSHDebug.shared.set("niossh.multiplexer.channels", value: Int64(channelCount))
-        NIOSSHDebug.shared.set("niossh.multiplexer.pendingConfirms", value: Int64(channelCreationTimestamps.count))
+        if NIOSSHDebug.shared.isEventEnabled {
+            let channelCount = self.channels.count
+            NIOSSHDebug.shared.set("niossh.multiplexer.channels", value: Int64(channelCount))
+            NIOSSHDebug.shared.set("niossh.multiplexer.pendingConfirms", value: Int64(channelCreationTimestamps.count))
 
-        // Periodic state snapshot (every 2 seconds) — unconditional
-        let now = NIOSSHDebug.nowUs()
-        if now - lastSnapshotTimeUs > 2_000_000 {
-            let pendConfirm = channelCreationTimestamps.count
-            let sinceReadMs = lastChannelReadUs > 0 ? (now - lastChannelReadUs) / 1000 : -1
+            let now = NIOSSHDebug.nowUs()
+            if !wasDebugEnabled {
+                // Reset counters accumulated while tracing was off so the first
+                // snapshot reflects only activity since tracing was enabled.
+                wasDebugEnabled = true
+                resetSnapshotCounters(now: now)
+            } else if now - lastSnapshotTimeUs > 2_000_000 {
+                let pendConfirm = channelCreationTimestamps.count
+                let sinceReadMs = lastChannelReadUs > 0 ? (now - lastChannelReadUs) / 1000 : -1
 
-            NIOSSHDebug.shared.tsLog(
-                "SNAPSHOT ch=\(channelCount) pend=\(pendConfirm) " +
-                "tcpR=\(snapTcpReads) tcpKB=\(snapTcpBytes/1024) " +
-                "parsed=\(snapSshPacketsParsed) nonCh=\(snapNonChannelMsgs) " +
-                "dPkt=\(snapDataPkts) dKB=\(snapDataBytes/1024) " +
-                "waOut=\(snapWaOut) waOutKB=\(snapWaOutBytes/1024) waIn=\(snapWaIn) " +
-                "conf=\(snapConfirms) fail=\(snapFailures) cls=\(snapCloses) eof=\(snapEOFs) " +
-                "sinceRead=\(sinceReadMs)ms"
-            )
-
-            // Stall detection: pending confirms exist but none arrived this snapshot
-            if pendConfirm > 0 && snapConfirms == 0 {
-                let pendIDs = channelCreationTimestamps.keys.sorted().prefix(10)
-                    .map { id -> String in
-                        let age = (now - (channelCreationTimestamps[id] ?? now)) / 1000
-                        return "id=\(id):\(age)ms"
-                    }.joined(separator: " ")
-                NIOSSHDebug.shared.tsLog("CONFIRM-STALL pend=\(pendConfirm) noConfirmThisWindow [\(pendIDs)]")
-            }
-
-            // Aggregate budget diagnostics (only if budget is active)
-            if aggregateWindowBudget > 0 {
-                let deferredCount = channelsNeedingAdjust.count
                 NIOSSHDebug.shared.tsLog(
-                    "BUDGET outstanding=\(aggregateOutstandingCredit)/\(aggregateWindowBudget) " +
-                    "deferred=\(deferredCount) creditCh=\(perChannelCredit.count)"
+                    "SNAPSHOT ch=\(channelCount) pend=\(pendConfirm) " +
+                    "tcpR=\(snapTcpReads) tcpKB=\(snapTcpBytes/1024) " +
+                    "parsed=\(snapSshPacketsParsed) nonCh=\(snapNonChannelMsgs) " +
+                    "dPkt=\(snapDataPkts) dKB=\(snapDataBytes/1024) " +
+                    "waOut=\(snapWaOut) waOutKB=\(snapWaOutBytes/1024) waIn=\(snapWaIn) " +
+                    "conf=\(snapConfirms) fail=\(snapFailures) cls=\(snapCloses) eof=\(snapEOFs) " +
+                    "sinceRead=\(sinceReadMs)ms"
                 )
-            }
 
-            // Reset per-snapshot accumulators
-            snapDataPkts = 0; snapDataBytes = 0
-            snapWaIn = 0; snapWaOut = 0; snapWaOutBytes = 0
-            snapConfirms = 0; snapFailures = 0; snapCloses = 0; snapEOFs = 0
-            snapTcpReads = 0; snapTcpBytes = 0
-            snapSshPacketsParsed = 0; snapNonChannelMsgs = 0
-            windowAdjustBytesSinceSnapshot = 0
-            channelDataBytesSinceSnapshot = 0
-            lastSnapshotTimeUs = now
+                // Stall detection: pending confirms exist but none arrived this snapshot
+                if pendConfirm > 0 && snapConfirms == 0 {
+                    let pendIDs = channelCreationTimestamps.keys.sorted().prefix(10)
+                        .map { id -> String in
+                            let age = (now - (channelCreationTimestamps[id] ?? now)) / 1000
+                            return "id=\(id):\(age)ms"
+                        }.joined(separator: " ")
+                    NIOSSHDebug.shared.tsLog("CONFIRM-STALL pend=\(pendConfirm) noConfirmThisWindow [\(pendIDs)]")
+                }
+
+                // Aggregate budget diagnostics (only if budget is active)
+                if aggregateWindowBudget > 0 {
+                    let deferredCount = channelsNeedingAdjust.count
+                    NIOSSHDebug.shared.tsLog(
+                        "BUDGET outstanding=\(aggregateOutstandingCredit)/\(aggregateWindowBudget) " +
+                        "deferred=\(deferredCount) creditCh=\(perChannelCredit.count)"
+                    )
+                }
+
+                resetSnapshotCounters(now: now)
+            }
+        } else if wasDebugEnabled {
+            wasDebugEnabled = false
+        }
+
+        let channelCount = self.channels.count
+        guard channelCount > 0 else { return }
+
+        // Fast path for the common single-channel interactive session: avoid
+        // heap-allocating an Array snapshot on every TCP read.
+        if channelCount == 1, let onlyChannel = self.channels.values.first {
+            onlyChannel.receiveParentChannelReadComplete()
+            return
         }
 
         let channels = Array(self.channels.values)
-        guard !channels.isEmpty else { return }
-
         if channels.count <= Self.readCompleteBatchSize {
             for channel in channels {
                 channel.receiveParentChannelReadComplete()

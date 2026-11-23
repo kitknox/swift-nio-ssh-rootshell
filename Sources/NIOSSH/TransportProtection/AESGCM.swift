@@ -113,14 +113,12 @@ extension AESGCMTransportProtection: NIOSSHTransportProtection {
         // Don't forget to increment the inbound nonce.
         self.inboundNonce.increment()
 
-        // Ok, we want to write the plaintext back into the buffer. This contains the padding length byte and the padding
-        // bytes, so we want to strip those. We write back into the buffer and then slice the return value out because
-        // it's highly likely that the source buffer is held uniquely, which means we can avoid an allocation.
+        // Strip padding and return a right-sized ByteBuffer without mutating `source`.
+        // `source` is a readSlice of SSHPacketParser's receive buffer, so its storage
+        // is shared (refcount >= 2); writing back into `source` would trigger a CoW
+        // copy of the entire receive buffer on every decrypted packet.
         try plaintext.removePaddingBytes()
-        source.prependData(plaintext)
-
-        // This slice read must succeed, as we just wrote in that many bytes.
-        return source.readSlice(length: plaintext.count)!
+        return ByteBuffer(bytes: plaintext)
     }
 
     func encryptPacket(_ packet: NIOSSHEncryptablePayload, to outboundBuffer: inout ByteBuffer, sequenceNumber: UInt32) throws {
@@ -351,16 +349,6 @@ extension SSHAESGCMNonce: ContiguousBytes {
 extension SSHAESGCMNonce: DataProtocol {
     var regions: CollectionOfOne<SSHAESGCMNonce> {
         .init(self)
-    }
-}
-
-private extension ByteBuffer {
-    /// Prepends the given Data to this ByteBuffer.
-    ///
-    /// Will crash if there isn't space in the front of this buffer, so please ensure there is!
-    mutating func prependData(_ data: Data) {
-        self.moveReaderIndex(to: self.readerIndex - data.count)
-        self.setContiguousBytes(data, at: self.readerIndex)
     }
 }
 

@@ -12,6 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+import Atomics
 import Crypto
 import NIOCore
 import NIOFoundationCompat
@@ -467,6 +468,85 @@ final class AESGCMTests: XCTestCase {
         representedNonce.withUnsafeBytes { innerPtr in
             XCTAssertEqual(Array(innerPtr), incrementedNonce)
         }
+    }
+
+    func testDecryptMultiplePacketsSharingBackingBufferWithoutMutatingSource() throws {
+        let initialKeys = self.generateKeys(keySize: .bits256)
+        let encryptor = try assertNoThrowWithValue(AES256GCMOpenSSHTransportProtection(initialKeys: initialKeys, mac: nil))
+        let decryptor = try assertNoThrowWithValue(AES256GCMOpenSSHTransportProtection(initialKeys: initialKeys.inverted, mac: nil))
+
+        var wire = ByteBufferAllocator().buffer(capacity: 512)
+        let payloads = ["a", "hello world", String(repeating: "x", count: 200)]
+        var packetLengths: [Int] = []
+        for (idx, text) in payloads.enumerated() {
+            let before = wire.writerIndex
+            let msg = SSHMessage.channelData(.init(recipientChannel: 0, data: ByteBuffer(string: text)))
+            try encryptor.encryptPacket(NIOSSHEncryptablePayload(message: msg), to: &wire, sequenceNumber: UInt32(idx))
+            packetLengths.append(wire.writerIndex - before)
+        }
+
+        // Snapshot wire bytes so refcount >= 2 (matching SSHPacketParser's retained buffer).
+        let originalWireSnapshot = wire
+        let expectedWireBytes = originalWireSnapshot.getBytes(
+            at: originalWireSnapshot.readerIndex,
+            length: originalWireSnapshot.readableBytes
+        )
+        for (idx, length) in packetLengths.enumerated() {
+            var slice = try XCTUnwrap(wire.readSlice(length: length))
+            let sliceStart = slice.readerIndex
+            let sliceLength = slice.readableBytes
+            let expectedCiphertext = slice.getBytes(at: sliceStart, length: sliceLength)
+
+            try decryptor.decryptFirstBlock(&slice)
+            var plaintext = try decryptor.decryptAndVerifyRemainingPacket(&slice, sequenceNumber: UInt32(idx))
+            XCTAssertEqual(slice.readableBytes, 0)
+
+            // Verify decryption did NOT overwrite `slice`'s ciphertext storage with plaintext
+            // (the old prependData path mutated `slice` in place and triggered a CoW copy).
+            slice.moveReaderIndex(to: sliceStart)
+            XCTAssertEqual(slice.getBytes(at: sliceStart, length: sliceLength), expectedCiphertext)
+
+            guard case .some(.channelData(let channelData)) = try plaintext.readSSHMessage() else {
+                return XCTFail("Expected channelData message at packet \(idx)")
+            }
+            XCTAssertEqual(String(buffer: channelData.data), payloads[idx])
+        }
+
+        // The retained original ciphertext buffer must remain byte-for-byte untouched.
+        XCTAssertEqual(
+            originalWireSnapshot.getBytes(
+                at: originalWireSnapshot.readerIndex,
+                length: originalWireSnapshot.readableBytes
+            ),
+            expectedWireBytes
+        )
+    }
+
+    func testNIOSSHDebugInitiallyDisabledAndDynamicToggle() {
+        let called = ManagedAtomic<Int>(0)
+        NIOSSHDebug.shared.setHandlers(
+            increment: { _, _ in called.wrappingIncrement(ordering: .relaxed) },
+            set: { _, _ in called.wrappingIncrement(ordering: .relaxed) },
+            event: { _ in called.wrappingIncrement(ordering: .relaxed) },
+            tsLog: { _ in called.wrappingIncrement(ordering: .relaxed) },
+            initiallyEnabled: false
+        )
+        defer { NIOSSHDebug.shared.setEnabled(false) }
+
+        XCTAssertFalse(NIOSSHDebug.shared.isEventEnabled)
+        NIOSSHDebug.shared.increment("test.counter")
+        NIOSSHDebug.shared.event("ignored")
+        XCTAssertEqual(called.load(ordering: .relaxed), 0)
+
+        NIOSSHDebug.shared.setEnabled(true)
+        XCTAssertTrue(NIOSSHDebug.shared.isEventEnabled)
+        NIOSSHDebug.shared.increment("test.counter")
+        XCTAssertEqual(called.load(ordering: .relaxed), 1)
+
+        NIOSSHDebug.shared.setEnabled(false)
+        XCTAssertFalse(NIOSSHDebug.shared.isEventEnabled)
+        NIOSSHDebug.shared.event("ignored-again")
+        XCTAssertEqual(called.load(ordering: .relaxed), 1)
     }
 }
 

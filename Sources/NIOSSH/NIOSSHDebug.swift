@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+import Atomics
 import Dispatch
 import NIOConcurrencyHelpers
 import NIOCore
@@ -31,16 +32,19 @@ public final class NIOSSHDebug: @unchecked Sendable {
     /// Lock-free fast-path flag. True when any handler has been wired via
     /// `setHandlers(...)`. Read by every `increment`/`set`/`event`/`tsLog`
     /// call site to short-circuit before any work is done.
-    private let _isEnabled = NIOLockedValueBox<Bool>(false)
+    private let _isEnabled = ManagedAtomic<Bool>(false)
 
     private init() {}
 
     /// Wire up handlers to receive metrics. Call once before SSH connections start.
+    /// Pass `initiallyEnabled: false` when handlers are installed unconditionally at
+    /// startup and toggled on/off later via `setEnabled(_:)`.
     public func setHandlers(
         increment: @escaping @Sendable (String, Int64) -> Void,
         set: @escaping @Sendable (String, Int64) -> Void,
         event: @escaping @Sendable (String) -> Void,
-        tsLog: @escaping @Sendable (String) -> Void
+        tsLog: @escaping @Sendable (String) -> Void,
+        initiallyEnabled: Bool = true
     ) {
         lock.lock()
         _increment = increment
@@ -48,7 +52,13 @@ public final class NIOSSHDebug: @unchecked Sendable {
         _event = event
         _tsLog = tsLog
         lock.unlock()
-        _isEnabled.withLockedValue { $0 = true }
+        _isEnabled.store(initiallyEnabled, ordering: .releasing)
+    }
+
+    /// Dynamically enable or disable debug event/counter collection without
+    /// reinstalling handlers. Safe to call from any thread.
+    public func setEnabled(_ enabled: Bool) {
+        _isEnabled.store(enabled, ordering: .releasing)
     }
 
     /// True when handlers are wired. Use as a fast-path before computing
@@ -57,7 +67,7 @@ public final class NIOSSHDebug: @unchecked Sendable {
     ///     guard NIOSSHDebug.shared.isEventEnabled else { return }
     ///     NIOSSHDebug.shared.event("…big string…")
     public var isEventEnabled: Bool {
-        _isEnabled.withLockedValue { $0 }
+        _isEnabled.load(ordering: .acquiring)
     }
 
     func increment(_ key: String, by value: Int64 = 1) {

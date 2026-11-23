@@ -221,11 +221,14 @@ extension NIOSSHHandler: ChannelDuplexHandler {
     }
 
     public func channelReadComplete(context: ChannelHandlerContext) {
-        let t0 = NIOSSHDebug.nowUs()
+        let debugEnabled = NIOSSHDebug.shared.isEventEnabled
+        let t0 = debugEnabled ? NIOSSHDebug.nowUs() : 0
 
         self.multiplexer?.parentChannelReadComplete()
-        let t1 = NIOSSHDebug.nowUs()
-        NIOSSHDebug.shared.increment("niossh.readComplete.multiplexerUs", by: t1 - t0)
+        let t1 = debugEnabled ? NIOSSHDebug.nowUs() : 0
+        if debugEnabled {
+            NIOSSHDebug.shared.increment("niossh.readComplete.multiplexerUs", by: t1 - t0)
+        }
 
         self.expectingChannelReadComplete = false
 
@@ -235,36 +238,42 @@ extension NIOSSHHandler: ChannelDuplexHandler {
             self.pendingWrite = false
             context.flush()
         }
-        let t2 = NIOSSHDebug.nowUs()
-        NIOSSHDebug.shared.increment("niossh.readComplete.flushUs", by: t2 - t1)
+        let t2 = debugEnabled ? NIOSSHDebug.nowUs() : 0
+        if debugEnabled {
+            NIOSSHDebug.shared.increment("niossh.readComplete.flushUs", by: t2 - t1)
+        }
 
         let pendingCount = self.pendingChannelInitializations.count
         self.createPendingChannelsIfPossible()
-        let dispatched = pendingCount - self.pendingChannelInitializations.count
-        if dispatched > 0 {
-            NIOSSHDebug.shared.increment("niossh.createChannel.dispatched", by: Int64(dispatched))
-        }
-        if pendingCount > 0 {
-            NIOSSHDebug.shared.set("niossh.pendingChannelInits", value: Int64(self.pendingChannelInitializations.count))
+        if debugEnabled {
+            let dispatched = pendingCount - self.pendingChannelInitializations.count
+            if dispatched > 0 {
+                NIOSSHDebug.shared.increment("niossh.createChannel.dispatched", by: Int64(dispatched))
+            }
+            if pendingCount > 0 {
+                NIOSSHDebug.shared.set("niossh.pendingChannelInits", value: Int64(self.pendingChannelInitializations.count))
+            }
         }
 
         self.sendGlobalRequestsIfPossible()
-        let t3 = NIOSSHDebug.nowUs()
 
-        NIOSSHDebug.shared.increment("niossh.readComplete.totalUs", by: t3 - t0)
-        NIOSSHDebug.shared.increment("niossh.readComplete.count")
+        if debugEnabled {
+            let t3 = NIOSSHDebug.nowUs()
+            NIOSSHDebug.shared.increment("niossh.readComplete.totalUs", by: t3 - t0)
+            NIOSSHDebug.shared.increment("niossh.readComplete.count")
 
-        // Log slow readComplete cycles
-        let totalUs = t3 - t0
-        if totalUs > 1000 { // > 1ms
-            NIOSSHDebug.shared.event("slow-readComplete \(totalUs)us mux=\(t1-t0)us flush=\(t2-t1)us create=\(t3-t2)us")
-        }
+            // Log slow readComplete cycles
+            let totalUs = t3 - t0
+            if totalUs > 1000 { // > 1ms
+                NIOSSHDebug.shared.event("slow-readComplete \(totalUs)us mux=\(t1-t0)us flush=\(t2-t1)us create=\(t3-t2)us")
+            }
 
-        // Track parent TCP channel writability — if non-writable, the TCP pipe is saturated
-        let writable = context.channel.isWritable
-        NIOSSHDebug.shared.set("niossh.tcp.isWritable", value: writable ? 1 : 0)
-        if !writable {
-            NIOSSHDebug.shared.increment("niossh.tcp.notWritable")
+            // Track parent TCP channel writability — if non-writable, the TCP pipe is saturated
+            let writable = context.channel.isWritable
+            NIOSSHDebug.shared.set("niossh.tcp.isWritable", value: writable ? 1 : 0)
+            if !writable {
+                NIOSSHDebug.shared.increment("niossh.tcp.notWritable")
+            }
         }
     }
 
@@ -663,6 +672,7 @@ extension NIOSSHHandler: SSHMultiplexerDelegate {
         // If a child channel flushes and we aren't in a channelReadComplete loop, we need to flush. Otherwise
         // we can just wait.
         if !self.expectingChannelReadComplete {
+            self.pendingWrite = false
             NIOSSHDebug.shared.increment("niossh.childFlush.immediate")
             self.context?.flush()
         } else {
